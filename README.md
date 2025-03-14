@@ -15,3 +15,7 @@ $^1$ Indian Institute of Technology, Roorkee, $^2$ [Lossfunk](https://lossfunk.c
 ## Code for DPO Training
  
 Steps and Each code usage
+
+## Acknowledgements
+
+The computational resources needed for the project were funded by [Modal Cloud](https://modal.com/) and [E2E Networks](https://www.e2enetworks.com/)
