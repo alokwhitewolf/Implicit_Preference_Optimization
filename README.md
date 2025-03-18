@@ -78,7 +78,6 @@ python DPO/ours.py \
     --train_path <train_path> \
     --test_path <test_path> \
     --mapped_path <mapped_path> \
-    --just_sample
 
 ```
 
