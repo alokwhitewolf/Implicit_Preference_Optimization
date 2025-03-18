@@ -16,7 +16,7 @@ Reinforcement learning from human feedback (RLHF) has emerged as the primary met
 ## File Structure
 
 ```
-DPO
+IPO
 ├── Evals
 │   ├── create_subset.py
 │   └── sample_mmlu.py
@@ -46,7 +46,17 @@ Preference_Comparison
     └── self_reward_gpt.py
 ```
 
-## Evaluating Preference Modeling
+## Setup
+Installation
+```
+git clone https://github.com/shivank21/Implicit_Preference_Optimization.git
+cd Implicit_Preference_Optimization
+```
+
+Create a conda environment
+```
+conda create -f environment.yaml
+```
 
 To evalute the preference modeling ability of any LLM on Reward Bench
 ```
@@ -58,10 +68,9 @@ To evalute the preference modeling ability of any LLM on RM Bench
 python Preference_Comparison/RM_Bench/ours.py --hf_key YOUR_HF_KEY --hf_user YOUR_HF_USERNAME --model_name YOUR_MODEL_NAME
 ```
 
-## DPO
 To run the script of IPO use the following command
 ```
-python DPO/ours.py \
+python IPO/ours.py \
     --model_id mistralai/Mistral-7B-Instruct-v0.1 \
     --dataset_id argilla/ultrafeedback-binarized-preferences-cleaned \
     --num_train_epochs <epochs> \
@@ -78,9 +87,16 @@ python DPO/ours.py \
     --train_path <train_path> \
     --test_path <test_path> \
     --mapped_path <mapped_path> \
-
 ```
 
-## Acknowledgements
+## Dataset
+- [Dolly-15K](https://huggingface.co/datasets/databricks/databricks-dolly-15k) - SFT
+- [Ultrafeedback](https://huggingface.co/datasets/argilla/ultrafeedback-binarized-preferences-cleaned) - DPO
+- [RM-Bench](https://github.com/THU-KEG/RM-Bench), [RewardBench](https://huggingface.co/datasets/allenai/reward-bench) - For Benchmarking Preference Classification
 
+## Models
+- [Llama3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B) - As base model onto which SFT and IPO was applied.
+- [Mistral-7B-Instruct](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2) - As base model on which directly IPO was applied.
+
+## Acknowledgements
 The computational resources needed for the project were funded by [Modal Cloud](https://modal.com/) and [E2E Networks](https://www.e2enetworks.com/)
