@@ -16,7 +16,7 @@ Reinforcement learning from human feedback (RLHF) has emerged as the primary met
 ## File Structure
 
 ```
-IPO
+DPO
 ├── Evals
 │   ├── create_subset.py
 │   └── sample_mmlu.py
@@ -70,7 +70,7 @@ python Preference_Comparison/RM_Bench/ours.py --hf_key YOUR_HF_KEY --hf_user YOU
 
 To run the script of IPO use the following command
 ```
-python IPO/ours.py \
+python DPO/ours.py \
     --model_id mistralai/Mistral-7B-Instruct-v0.1 \
     --dataset_id argilla/ultrafeedback-binarized-preferences-cleaned \
     --num_train_epochs <epochs> \
