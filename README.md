@@ -11,15 +11,76 @@ $^1$ Indian Institute of Technology, Roorkee, $^2$ [Lossfunk](https://lossfunk.c
 ## Abstract: 
 Reinforcement learning from human feedback (RLHF) has emerged as the primary method for aligning large language models (LLMs) with human preferences. While it enables LLMs to achieve human-level alignment, it often incurs significant computational and financial costs due to its reliance on training external reward models or human-labeled preferences. In this work, we propose Implicit Preference Optimization (IPO), an alternative approach that leverages generative LLMs as preference classifiers, thereby reducing the dependence on external human feedback or reward models to obtain preferences. We conduct a comprehensive evaluation on the preference classification ability of LLMs using RewardBench, assessing models across different sizes, architectures, and training levels to validate our hypothesis. Furthermore, we investigate the self-improvement capabilities of LLMs by generating multiple responses for a given instruction and employing the model itself as a preference classifier for Direct Preference Optimization (DPO)-based training. Our findings demonstrate that models trained through IPO achieve performance comparable to those utilizing state-of-the-art reward models for obtaining preferences.
 
-![Model Diagram](assets/model_diagram.jpeg)
+![Model Diagram](assets/approach.png)
 
-## Code for Reward Bench and RM Bench Evaluations 
+## File Structure
 
-- `binary_gpt.py:` About code and how to run
+```
+DPO
+├── Evals
+│   ├── create_subset.py
+│   └── sample_mmlu.py
+├── merge_peft.py
+├── ours.py
+├── sample_responses.py
+└── self_reward.py
+```
 
-## Code for DPO Training
- 
-Steps and Each code usage
+```
+Preference_Comparison
+├── RM_Bench
+│   ├── binary_gpt.py
+│   ├── ours.py
+│   ├── ours_gpt.py
+│   ├── reward_model.py
+│   ├── self_reward.py
+│   └── self_reward_gpt.py
+└── Reward_Bench
+    ├── binary_gpt.py
+    ├── candidate_prompts.json
+    ├── ours.py
+    ├── ours_gpt.py
+    ├── prompt_search.py
+    ├── reward_model.py
+    ├── self_reward.py
+    └── self_reward_gpt.py
+```
+
+## Evaluating Preference Modeling
+
+To evalute the preference modeling ability of any LLM on Reward Bench
+```
+python Preference_Comparison/Reward_Bench/ours.py --hf_key YOUR_HF_KEY --hf_user YOUR_HF_USERNAME --model_name YOUR_MODEL_NAME
+```
+
+To evalute the preference modeling ability of any LLM on RM Bench
+```
+python Preference_Comparison/RM_Bench/ours.py --hf_key YOUR_HF_KEY --hf_user YOUR_HF_USERNAME --model_name YOUR_MODEL_NAME
+```
+
+## DPO
+To run the script of IPO use the following command
+```
+python DPO/ours.py \
+    --model_id mistralai/Mistral-7B-Instruct-v0.1 \
+    --dataset_id argilla/ultrafeedback-binarized-preferences-cleaned \
+    --num_train_epochs <epochs> \
+    --learning_rate <lr> \
+    --dpo_beta <beta> \
+    --output_dir ./outputs \
+    --run_name dpo_mistral_$(date +%Y%m%d%H%M) \
+    --merge_adapters \
+    --push_to_hub \
+    --hub_repo_id dpo-ultrafeedback-mistral \
+    --wandb_project dpo-ultrafeedback \
+    --dataset_name <dataset_id> \
+    --split_name split_1 \
+    --train_path <train_path> \
+    --test_path <test_path> \
+    --mapped_path <mapped_path> \
+    --just_sample
+
+```
 
 ## Acknowledgements
 
