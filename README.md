@@ -96,7 +96,7 @@ python DPO/ours.py \
 
 ## Models
 - [Llama3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B) - As base model onto which SFT and IPO was applied.
-- [Mistral-7B-Instruct](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2) - As base model on which directly IPO was applied.
+- [Mistral-7B-Instruct](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.1) - As base model on which directly IPO was applied.
 
 ## Acknowledgements
 The computational resources needed for the project were funded by [Modal Cloud](https://modal.com/) and [E2E Networks](https://www.e2enetworks.com/)
