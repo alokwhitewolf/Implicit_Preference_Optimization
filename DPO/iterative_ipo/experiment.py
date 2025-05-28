@@ -19,6 +19,7 @@ from .training.preference_gen import PreferenceGenerator
 from .training.sft_trainer import SFTTrainerWrapper
 from .training.dpo_trainer import DPOTrainerWrapper
 from .evaluation.self_evaluator import SelfEvaluator
+from .evaluation.external_evaluator import ExternalEvaluator
 from .analysis.metrics import MetricsCalculator
 from .analysis.reporting import ResultsReporter
 
@@ -38,6 +39,7 @@ class IterativeIPO:
         self.sft_trainer = SFTTrainerWrapper(config)
         self.dpo_trainer = DPOTrainerWrapper(config)
         self.self_evaluator = SelfEvaluator(config)
+        self.external_evaluator = ExternalEvaluator(config)
         self.metrics_calculator = MetricsCalculator(config)
         self.results_reporter = ResultsReporter(config)
         
@@ -105,7 +107,15 @@ class IterativeIPO:
             category_scores = self.self_evaluator.evaluate_categories(train_prefs)
             self_eval_accuracy = self.metrics_calculator.calculate_self_eval_accuracy(category_scores)
             
-            # Step 7: Calculate additional metrics
+            # Step 7: External evaluation on real benchmarks
+            external_scores = {}
+            if (self.config.enable_external_eval and 
+                iteration % self.config.external_eval_frequency == 0):
+                external_scores = self.external_evaluator.evaluate_all_datasets(
+                    model, tokenizer, iteration + 1
+                )
+            
+            # Step 8: Calculate additional metrics
             preference_agreement = self.metrics_calculator.calculate_preference_agreement(train_prefs, previous_prefs)
             response_diversity = self.metrics_calculator.calculate_response_diversity(train_prefs)
             
@@ -118,12 +128,18 @@ class IterativeIPO:
                 preference_agreement=preference_agreement,
                 response_diversity=response_diversity,
                 category_scores=category_scores,
+                
+                # External benchmark scores
+                gsm8k_accuracy=external_scores.get('gsm8k_accuracy', 0.0),
+                truthful_qa_score=external_scores.get('truthful_qa_score', 0.0),
+                hellaswag_accuracy=external_scores.get('hellaswag_accuracy', 0.0),
+                
                 timestamp=datetime.now().isoformat()
             )
             self.iteration_metrics.append(metrics)
             
             # Log to wandb
-            wandb.log({
+            wandb_log = {
                 "iteration": iteration + 1,
                 "train_loss": train_loss,
                 "eval_loss": eval_loss,
@@ -131,14 +147,30 @@ class IterativeIPO:
                 "preference_agreement": preference_agreement,
                 "response_diversity": response_diversity,
                 **{f"category/{k}": v for k, v in category_scores.items()},
-            })
+            }
+            
+            # Add external scores if available
+            if external_scores:
+                wandb_log.update({
+                    "benchmark/gsm8k_accuracy": external_scores.get('gsm8k_accuracy', 0.0),
+                    "benchmark/truthful_qa_score": external_scores.get('truthful_qa_score', 0.0),
+                    "benchmark/hellaswag_accuracy": external_scores.get('hellaswag_accuracy', 0.0),
+                })
+            
+            wandb.log(wandb_log)
             
             # Save results
             self.results_reporter.save_results(self.iteration_metrics, iteration + 1)
             
             # Handle selective model saving after evaluation
+            # Use external benchmark performance if available, otherwise fall back to self-eval
+            performance_metric = (
+                external_scores.get('gsm8k_accuracy', 0.0) if external_scores 
+                else self_eval_accuracy
+            )
+            
             if not getattr(self.config, 'save_all_checkpoints', True):
-                self._handle_selective_saving(self_eval_accuracy, iteration + 1)
+                self._handle_selective_saving(performance_metric, iteration + 1)
             
             # Update for next iteration
             checkpoint_path = os.path.join(self.config.checkpoint_dir, f"iteration_{iteration + 1}")
@@ -177,8 +209,14 @@ class IterativeIPO:
         if len(self.iteration_metrics) < 3:
             return False
         
-        # Get recent performance trend
-        recent_scores = [m.self_eval_accuracy for m in self.iteration_metrics[-3:]]
+        # Use external benchmark scores if available, otherwise self-eval
+        recent_scores = []
+        for m in self.iteration_metrics[-3:]:
+            # Prioritize GSM8K as primary metric, fallback to self-eval
+            if m.gsm8k_accuracy > 0:
+                recent_scores.append(m.gsm8k_accuracy)
+            else:
+                recent_scores.append(m.self_eval_accuracy)
         
         # Check for consistent degradation
         degradation_count = 0
@@ -188,7 +226,8 @@ class IterativeIPO:
         
         # Stop if degrading for 2+ consecutive iterations
         if degradation_count >= 2:
-            print(f"⚠️ Performance degrading: {recent_scores}")
+            metric_name = "GSM8K accuracy" if self.iteration_metrics[-1].gsm8k_accuracy > 0 else "self-eval accuracy"
+            print(f"⚠️ {metric_name} degrading: {recent_scores}")
             return True
         
         return False

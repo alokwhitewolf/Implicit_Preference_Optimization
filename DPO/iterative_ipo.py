@@ -33,7 +33,42 @@ def main():
     parser.add_argument("--track_degradation", action="store_true", default=True)
     parser.add_argument("--save_all_checkpoints", action="store_true", default=True)
     
+    # External evaluation parameters
+    parser.add_argument("--enable_external_eval", action="store_true", default=True, help="Enable external benchmark evaluation")
+    parser.add_argument("--external_eval_frequency", type=int, default=1, help="Evaluate every N iterations")
+    parser.add_argument("--external_eval_samples", type=int, default=100, help="Samples per benchmark dataset")
+    
+    # Arguments that are ignored but accepted for compatibility
+    parser.add_argument("--eval_datasets", nargs="*", help="Cross-dataset evaluation (ignored - use cross_dataset_experiment.py)")
+    parser.add_argument("--experiment_type", type=str, help="Experiment type (ignored)")
+    parser.add_argument("--cross_dataset_eval", action="store_true", help="Cross-dataset evaluation (ignored)")
+    parser.add_argument("--plateau_window", type=int, help="Plateau detection window (ignored)")
+    parser.add_argument("--use_qwen", action="store_true", help="Use Qwen model (ignored - specify model_id directly)")
+    
     args = parser.parse_args()
+    
+    # Handle special model flags
+    if args.use_qwen:
+        args.model_id = "Qwen/Qwen2.5-1.5B-Instruct"
+        print("🔄 Using Qwen model: Qwen/Qwen2.5-1.5B-Instruct")
+    
+    # Warn about ignored arguments
+    ignored_args = []
+    if args.eval_datasets:
+        ignored_args.append("--eval_datasets (use cross_dataset_experiment.py)")
+    if args.experiment_type:
+        ignored_args.append("--experiment_type")
+    if args.cross_dataset_eval:
+        ignored_args.append("--cross_dataset_eval (use cross_dataset_experiment.py)")
+    if args.plateau_window:
+        ignored_args.append("--plateau_window")
+    
+    if ignored_args:
+        print("⚠️ NOTICE: The following arguments are ignored in self-improvement mode:")
+        for arg in ignored_args:
+            print(f"   • {arg}")
+        print("💡 For cross-dataset evaluation, use: python cross_dataset_experiment.py")
+        print("")
     
     # Create experiment name based on configuration
     model_name = args.model_id.split("/")[-1]
@@ -56,7 +91,12 @@ def main():
         track_degradation=args.track_degradation,
         forced_iterations=args.forced_iterations,
         instruction_batch_size=args.instruction_batch_size,
-        eval_batch_size=args.eval_batch_size
+        eval_batch_size=args.eval_batch_size,
+        
+        # External evaluation configs
+        enable_external_eval=args.enable_external_eval,
+        external_eval_frequency=args.external_eval_frequency,
+        external_eval_samples=args.external_eval_samples
     )
     
     print(f"🔬 Starting Self-Improvement Experiment: {exp_name}")
@@ -64,12 +104,17 @@ def main():
     print(f"📝 Experiment will run for up to {args.max_iterations} iterations")
     if args.forced_iterations:
         print(f"   ⚠️ FORCED MODE: Will run exactly {args.forced_iterations} iterations")
-    print(f"📋 Paper-Aligned Methodology (like ours.py):")
+    print(f"📋 Enhanced Methodology (improved from ours.py):")
     print(f"   1. Generate preferences from {args.base_dataset}")
     print(f"   2. DPO training on self-generated preferences")
-    print(f"   3. Repeat and track self-improvement dynamics")
+    print(f"   3. Evaluate on external benchmarks (GSM8K, TruthfulQA, HellaSwag)")
+    print(f"   4. Repeat and track REAL performance improvements")
     print(f"🚀 GPU Optimization:")
     print(f"   - Preference generation: {args.instruction_batch_size} instructions × 4 responses")
+    if args.enable_external_eval:
+        print(f"📊 External evaluation:")
+        print(f"   - Frequency: every {args.external_eval_frequency} iteration(s)")
+        print(f"   - Samples per dataset: {args.external_eval_samples}")
     print(f"💾 Results will be saved to: {config.results_dir}")
     print(f"🔬 For cross-dataset transfer analysis, use: cross_dataset_experiment.py")
     

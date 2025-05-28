@@ -47,6 +47,12 @@ def main():
         num_responses_per_instruction=4,
         save_all_checkpoints=False,  # Only save current and best
         
+        # External evaluation settings
+        enable_external_eval=True,
+        external_eval_frequency=1,  # Evaluate every iteration
+        external_eval_datasets=['gsm8k', 'truthful_qa', 'hellaswag'],
+        external_eval_samples=100,  # Number of samples per dataset
+        
         # Paths
         base_dataset_path="databricks-dolly-15k",
         checkpoint_dir="./checkpoints_refactored_Phi-3.5-mini-instruct",
@@ -61,6 +67,11 @@ def main():
     print(f"Model: {config.model_id}")
     print(f"Max iterations: {config.max_iterations}")
     print(f"Samples per iteration: {config.samples_per_iteration}")
+    print(f"External evaluation: {config.enable_external_eval}")
+    if config.enable_external_eval:
+        print(f"  Datasets: {config.external_eval_datasets}")
+        print(f"  Samples per dataset: {config.external_eval_samples}")
+        print(f"  Frequency: every {config.external_eval_frequency} iteration(s)")
     print(f"Checkpoint dir: {config.checkpoint_dir}")
     print(f"Results dir: {config.results_dir}")
     

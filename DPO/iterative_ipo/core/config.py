@@ -17,7 +17,13 @@ class IterationMetrics:
     preference_agreement: float
     response_diversity: float
     category_scores: Dict[str, float]
-    timestamp: str
+    
+    # External benchmark scores
+    gsm8k_accuracy: float = 0.0
+    truthful_qa_score: float = 0.0
+    hellaswag_accuracy: float = 0.0
+    
+    timestamp: str = ""
 
 @dataclass
 class ExperimentConfig:
@@ -52,8 +58,19 @@ class ExperimentConfig:
     instruction_batch_size: int = 4
     eval_batch_size: int = 16
     
+    # External evaluation settings
+    enable_external_eval: bool = True
+    external_eval_frequency: int = 1  # Evaluate every N iterations
+    external_eval_datasets: List[str] = None  # Default: ['gsm8k', 'truthful_qa', 'hellaswag']
+    external_eval_samples: int = 100  # Number of samples per dataset
+    
     # Multi-GPU configuration (future)
     use_multigpu: bool = False
     gpus: Optional[List[int]] = None
     parallel_mode: str = "ddp"
     global_batch_size: int = 24
+    
+    def __post_init__(self):
+        """Set default values that depend on other fields"""
+        if self.external_eval_datasets is None:
+            self.external_eval_datasets = ['gsm8k', 'truthful_qa', 'hellaswag']
