@@ -47,6 +47,42 @@ Advanced analysis tool that:
 - Analyzes preference stability
 - Generates comprehensive visualization
 
+## Quick Start
+
+After completing the setup, run all experiments with:
+
+```bash
+./DPO/run_experiments.sh
+```
+
+This script runs the complete experimental suite with optimized batching for GPU efficiency.
+
+## Standalone Script Usage
+
+For custom experiments, use the main script directly:
+
+```bash
+cd DPO
+python iterative_ipo.py \
+  --model_id "meta-llama/Llama-3.2-1B-Instruct" \
+  --dataset "databricks/databricks-dolly-15k" \
+  --max_iterations 15 \
+  --samples_per_iteration 500 \
+  --instruction_batch_size 64 \
+  --eval_batch_size 64 \
+  --force_iterations \
+  --results_dir "./results/my_experiment"
+```
+
+**Key Hyperparameters:**
+- `learning_rate`: 3.75e-5 (optimized for batch size 8)
+- `per_device_train_batch_size`: 8
+- `per_device_eval_batch_size`: 64  
+- `gradient_accumulation_steps`: 1
+- `max_new_tokens`: 256
+- `dpo_beta`: 0.1
+- `temperature`: 0.7
+
 ## Running Experiments
 
 ### Quick Start

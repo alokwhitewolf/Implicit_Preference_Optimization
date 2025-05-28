@@ -246,21 +246,22 @@ class IterativeIPO:
             outputs = model(**inputs)
             logits = outputs.logits[0, -1]
             
-            # Get token IDs for Yes/No
-            yes_tokens = tokenizer.encode("Yes", add_special_tokens=False)
-            no_tokens = tokenizer.encode("No", add_special_tokens=False)
+            # Use ours.py approach - more robust to tokenizer differences
+            yes_tokens = tokenizer.encode(" Yes", add_special_tokens=False)
+            no_tokens = tokenizer.encode(" No", add_special_tokens=False)
             
-            # Handle different tokenizer behaviors
-            yes_token_id = yes_tokens[0] if yes_tokens else tokenizer.encode("yes", add_special_tokens=False)[0]
-            no_token_id = no_tokens[0] if no_tokens else tokenizer.encode("no", add_special_tokens=False)[0]
+            # Get full probability distribution
+            probs = torch.softmax(logits, dim=-1)
             
-            yes_logit = logits[yes_token_id].item()
-            no_logit = logits[no_token_id].item()
+            # Sum probabilities across all tokens for "Yes" and "No"
+            yes_prob = sum(probs[token_id].item() for token_id in yes_tokens if token_id < len(probs))
+            no_prob = sum(probs[token_id].item() for token_id in no_tokens if token_id < len(probs))
             
-            # Softmax to get probability
-            yes_prob = torch.nn.functional.softmax(
-                torch.tensor([yes_logit, no_logit]), dim=0
-            )[0].item()
+            # Normalize only over Yes/No probabilities (ours.py approach)
+            total_prob = yes_prob + no_prob
+            if total_prob > 0:
+                yes_prob = yes_prob / total_prob
+            # If total_prob == 0, yes_prob remains 0 (original ours.py behavior)
             
         return yes_prob
     
@@ -287,23 +288,30 @@ class IterativeIPO:
             outputs = model(**inputs)
             logits = outputs.logits[:, -1]  # Get last token logits for all samples
             
-            # Get token IDs for Yes/No
-            yes_tokens = tokenizer.encode("Yes", add_special_tokens=False)
-            no_tokens = tokenizer.encode("No", add_special_tokens=False)
+            # Use ours.py approach - more robust to tokenizer differences
+            yes_tokens = tokenizer.encode(" Yes", add_special_tokens=False)
+            no_tokens = tokenizer.encode(" No", add_special_tokens=False)
             
-            # Handle different tokenizer behaviors
-            yes_token_id = yes_tokens[0] if yes_tokens else tokenizer.encode("yes", add_special_tokens=False)[0]
-            no_token_id = no_tokens[0] if no_tokens else tokenizer.encode("no", add_special_tokens=False)[0]
+            # Debug: Print token info only once per evaluation
+            if not hasattr(self, '_debug_printed'):
+                print(f"Debug: 'Yes' tokens: {yes_tokens}, 'No' tokens: {no_tokens}")
+                print(f"Debug: Tokenizer vocab: {tokenizer.vocab_size}, Model vocab: {logits.shape[-1]}")
+                self._debug_printed = True
             
-            # Process each sample in the batch
+            # Process each sample in the batch using ours.py approach
             for i in range(len(responses)):
-                yes_logit = logits[i, yes_token_id].item()
-                no_logit = logits[i, no_token_id].item()
+                # Get full probability distribution for this sample
+                probs = torch.softmax(logits[i], dim=-1)
                 
-                # Softmax to get probability
-                yes_prob = torch.nn.functional.softmax(
-                    torch.tensor([yes_logit, no_logit]), dim=0
-                )[0].item()
+                # Sum probabilities across all tokens for "Yes" and "No"
+                yes_prob = sum(probs[token_id].item() for token_id in yes_tokens if token_id < len(probs))
+                no_prob = sum(probs[token_id].item() for token_id in no_tokens if token_id < len(probs))
+                
+                # Normalize only over Yes/No probabilities (ours.py approach)
+                total_prob = yes_prob + no_prob
+                if total_prob > 0:
+                    yes_prob = yes_prob / total_prob
+                # If total_prob == 0, yes_prob remains 0 (original ours.py behavior)
                 
                 scores.append(yes_prob)
         
@@ -401,16 +409,27 @@ class IterativeIPO:
         inputs = tokenizer(all_prompts, return_tensors="pt", truncation=True, max_length=512, padding=True)
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
         
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=PAPER_HYPERPARAMETERS["max_new_tokens"],
-                temperature=PAPER_HYPERPARAMETERS["temperature"],
-                do_sample=True,
-                top_p=0.9,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
+        try:
+            with torch.no_grad():
+                # Clear CUDA cache before generation
+                torch.cuda.empty_cache()
+                
+                # Add validation and safer generation parameters
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=PAPER_HYPERPARAMETERS["max_new_tokens"],
+                    temperature=max(0.1, PAPER_HYPERPARAMETERS["temperature"]),  # Ensure min temperature
+                    do_sample=True,
+                    top_p=0.9,
+                    top_k=50,  # Add top_k for stability
+                    pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    repetition_penalty=1.1,  # Prevent repetition loops
+                )
+        except Exception as e:
+            print(f"Batch generation failed: {e}")
+            torch.cuda.empty_cache()  # Clear memory on error
+            raise
         
         # Decode all responses
         all_responses = []
@@ -654,7 +673,7 @@ class IterativeIPO:
             # Evaluate performance
             cross_dataset_scores = self.evaluate_cross_dataset(model, tokenizer, eval_datasets)
             rewardbench_scores = self.evaluate_on_rewardbench(model, tokenizer)
-            self_eval_accuracy = np.mean(list(cross_dataset_scores.values()))
+            self_eval_accuracy = np.mean(list(cross_dataset_scores.values())) if cross_dataset_scores else 0.0
             
             # Category-specific evaluation
             category_scores = {}
@@ -831,23 +850,24 @@ class IterativeIPO:
             outputs = model(**inputs)
             logits = outputs.logits[:, -1]  # Get last token logits for all samples
             
-            # Get token IDs for Yes/No
-            yes_tokens = tokenizer.encode("Yes", add_special_tokens=False)
-            no_tokens = tokenizer.encode("No", add_special_tokens=False)
-            
-            # Handle different tokenizer behaviors
-            yes_token_id = yes_tokens[0] if yes_tokens else tokenizer.encode("yes", add_special_tokens=False)[0]
-            no_token_id = no_tokens[0] if no_tokens else tokenizer.encode("no", add_special_tokens=False)[0]
+            # Use ours.py approach - more robust to tokenizer differences
+            yes_tokens = tokenizer.encode(" Yes", add_special_tokens=False)
+            no_tokens = tokenizer.encode(" No", add_special_tokens=False)
             
             # Process each sample in the batch
             for i in range(len(eval_prompts)):
-                yes_logit = logits[i, yes_token_id].item()
-                no_logit = logits[i, no_token_id].item()
+                # Get full probability distribution for this sample
+                probs = torch.softmax(logits[i], dim=-1)
                 
-                # Softmax to get probability
-                yes_prob = torch.nn.functional.softmax(
-                    torch.tensor([yes_logit, no_logit]), dim=0
-                )[0].item()
+                # Sum probabilities across all tokens for "Yes" and "No"
+                yes_prob = sum(probs[token_id].item() for token_id in yes_tokens if token_id < len(probs))
+                no_prob = sum(probs[token_id].item() for token_id in no_tokens if token_id < len(probs))
+                
+                # Normalize only over Yes/No probabilities (ours.py approach)
+                total_prob = yes_prob + no_prob
+                if total_prob > 0:
+                    yes_prob = yes_prob / total_prob
+                # If total_prob == 0, yes_prob remains 0 (original ours.py behavior)
                 
                 scores.append(yes_prob)
         

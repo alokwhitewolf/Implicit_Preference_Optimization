@@ -22,7 +22,7 @@ PAPER_MODELS = {
 # Updated hyperparameters from paper
 PAPER_HYPERPARAMETERS = {
     "dpo_beta": 0.1,  # From original implementation
-    "learning_rate": 3.75e5, # reduced to account for higher batch size
+    "learning_rate": 3.75e-5, # reduced to account for higher batch size
     "lora_r": 256,
     "lora_alpha": 128,
     "lora_dropout": 0.05,
