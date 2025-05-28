@@ -16,8 +16,9 @@ python DPO/iterative_ipo.py \
     --model_id "meta-llama/Llama-3.2-1B-Instruct" \
     --base_dataset "databricks/databricks-dolly-15k" \
     --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
-    --forced_iterations 30 \
+    --forced_iterations 15 \
     --samples_per_iteration 500 \
+    --instruction_batch_size 64 \
     --experiment_type "limit_testing" \
     --track_degradation \
     --cross_dataset_eval \
@@ -31,7 +32,8 @@ python DPO/iterative_ipo.py \
     --use_qwen \
     --base_dataset "databricks/databricks-dolly-15k" \
     --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
-    --max_iterations 25 \
+    --max_iterations 15 \
+    --instruction_batch_size 64 \
     --samples_per_iteration 500 \
     --experiment_type "limit_testing" \
     --track_degradation \
@@ -81,7 +83,8 @@ for dataset in "databricks/databricks-dolly-15k" "tatsu-lab/alpaca"; do
         --model_id "meta-llama/Llama-3.2-1B-Instruct" \
         --base_dataset "$dataset" \
         --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
-        --max_iterations 20 \
+        --max_iterations 15 \
+        --instruction_batch_size 64 \
         --samples_per_iteration 500 \
         --experiment_type "limit_testing" \
         --track_degradation \

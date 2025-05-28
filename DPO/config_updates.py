@@ -26,9 +26,11 @@ PAPER_HYPERPARAMETERS = {
     "lora_r": 256,
     "lora_alpha": 128,
     "lora_dropout": 0.05,
-    "num_responses": 8,  # Generate 8 responses per instruction for better GPU utilization
+    "num_responses": 4,  # Generate 4 responses per instruction (paper setting)
+    "instruction_batch_size": 64,  # Number of instructions to batch together for GPU efficiency
+    "eval_batch_size": 64,  # Number of evaluations to batch together for cross-dataset evaluation
     "temperature": 0.7,  # For response generation
-    "max_new_tokens": 512,  # Increased for bigger workloads
+    "max_new_tokens": 256,  # Aligned with ours.py
 }
 
 # Evaluation prompts based on task category (from paper insights)

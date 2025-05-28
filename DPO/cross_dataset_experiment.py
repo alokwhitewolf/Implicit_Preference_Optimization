@@ -21,7 +21,7 @@ class CrossDatasetAnalyzer:
         self.base_results_dir = base_results_dir
         self.results = {}
         
-    def run_transfer_experiments(self, datasets: list, max_iterations: int = 15, force_iterations: bool = True, samples_per_iteration: int = 500):
+    def run_transfer_experiments(self, datasets: list, max_iterations: int = 15, force_iterations: bool = True, samples_per_iteration: int = 500, instruction_batch_size: int = 4, eval_batch_size: int = 16):
         """Run experiments training on each dataset and evaluating on all others"""
         
         print(f"🔬 Running Cross-Dataset Transfer Analysis")
@@ -30,6 +30,7 @@ class CrossDatasetAnalyzer:
         print(f"⚙️ Max iterations: {max_iterations}")
         print(f"⚙️ Samples per iteration: {samples_per_iteration}")
         print(f"⚙️ Force completion: {force_iterations}")
+        print(f"🚀 GPU Optimization: {instruction_batch_size} instruction batches × {eval_batch_size} eval batches")
         
         for train_dataset in datasets:
             print(f"\n{'='*50}")
@@ -52,7 +53,11 @@ class CrossDatasetAnalyzer:
                 save_all_checkpoints=True,
                 cross_dataset_eval=True,
                 track_degradation=True,
-                forced_iterations=max_iterations if force_iterations else None  # Configurable forcing
+                forced_iterations=max_iterations if force_iterations else None,  # Configurable forcing
+                
+                # GPU optimization settings
+                instruction_batch_size=instruction_batch_size,
+                eval_batch_size=eval_batch_size
             )
             
             # Run experiment
@@ -300,6 +305,10 @@ def main():
     parser.add_argument("--force_iterations", action="store_true", default=True,
                        help="Force completion of all iterations (ignore early stopping)")
     parser.add_argument("--results_dir", type=str, default="./results/cross_dataset_analysis")
+    parser.add_argument("--instruction_batch_size", type=int, default=4,
+                       help="Number of instructions to batch together for GPU efficiency")
+    parser.add_argument("--eval_batch_size", type=int, default=16,
+                       help="Number of evaluations to batch together for cross-dataset evaluation")
     
     args = parser.parse_args()
     
@@ -311,7 +320,9 @@ def main():
         datasets=args.datasets, 
         max_iterations=args.max_iterations,
         force_iterations=args.force_iterations,
-        samples_per_iteration=args.samples_per_iteration
+        samples_per_iteration=args.samples_per_iteration,
+        instruction_batch_size=args.instruction_batch_size,
+        eval_batch_size=args.eval_batch_size
     )
 
 if __name__ == "__main__":

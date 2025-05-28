@@ -68,6 +68,8 @@ class ExperimentConfig:
     track_degradation: bool = True  # Detailed degradation tracking
     plateau_detection_window: int = 3  # Window for plateau detection
     forced_iterations: int = None  # Force specific number of iterations (ignore early stopping)
+    instruction_batch_size: int = 4  # Number of instructions to batch together for GPU efficiency
+    eval_batch_size: int = 16  # Number of evaluations to batch together for cross-dataset evaluation
     
 class IterativeIPO:
     """Main class for iterative self-improvement experiments"""
@@ -308,27 +310,140 @@ class IterativeIPO:
         return scores
     
     def generate_self_preferences(self, model, tokenizer, dataset, iteration: int):
-        """Generate preference pairs with category awareness"""
+        """Generate preference pairs with instruction-level batching for better GPU utilization"""
         preferences = []
         category_counts = {'code': 0, 'math': 0, 'chat': 0, 'safety': 0, 'reasoning': 0}
         
-        for example in tqdm(dataset, desc=f"Generating preferences (Iteration {iteration})"):
+        # Get batch size from config (can be overridden by command line)
+        instruction_batch_size = getattr(self.config, 'instruction_batch_size', PAPER_HYPERPARAMETERS.get("instruction_batch_size", 4))
+        num_responses = PAPER_HYPERPARAMETERS.get("num_responses", 4)
+        
+        # Process instructions in batches
+        dataset_list = list(dataset)
+        total_batches = (len(dataset_list) + instruction_batch_size - 1) // instruction_batch_size
+        
+        for batch_start in tqdm(range(0, len(dataset_list), instruction_batch_size), 
+                               desc=f"Generating preferences (Iteration {iteration})", 
+                               total=total_batches):
+            
+            batch_end = min(batch_start + instruction_batch_size, len(dataset_list))
+            instruction_batch = dataset_list[batch_start:batch_end]
+            
+            # Try batched approach first, fallback to sequential if OOM
+            try:
+                batch_preferences = self._process_instruction_batch(
+                    model, tokenizer, instruction_batch, num_responses, category_counts
+                )
+                preferences.extend(batch_preferences)
+                
+            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+                print(f"Batch processing failed ({e}), falling back to sequential processing...")
+                # Fallback to sequential processing for this batch
+                for example in instruction_batch:
+                    instruction = example.get('instruction') or example.get('prompt', '')
+                    category = self.detect_category(instruction)
+                    category_counts[category] += 1
+                    
+                    # Generate responses sequentially
+                    responses = self.generate_responses(model, tokenizer, instruction, num_responses)
+                    scores = self.evaluate_responses_batch(model, tokenizer, instruction, responses, category)
+                    
+                    # Create preference pair
+                    best_idx = np.argmax(scores)
+                    worst_idx = np.argmin(scores)
+                    
+                    if best_idx != worst_idx and scores[best_idx] - scores[worst_idx] > 0.1:
+                        preferences.append({
+                            'instruction': instruction,
+                            'chosen': responses[best_idx],
+                            'rejected': responses[worst_idx],
+                            'score_diff': scores[best_idx] - scores[worst_idx],
+                            'category': category,
+                            'chosen_score': scores[best_idx],
+                            'rejected_score': scores[worst_idx]
+                        })
+        
+        print(f"Category distribution: {category_counts}")
+        print(f"📊 Batched processing: {instruction_batch_size} instructions × {num_responses} responses = {instruction_batch_size * num_responses} responses per batch")
+        return Dataset.from_list(preferences)
+    
+    def _process_instruction_batch(self, model, tokenizer, instruction_batch, num_responses, category_counts):
+        """Process a batch of instructions simultaneously for maximum GPU efficiency"""
+        # Collect all prompts for this batch (num_responses per instruction)
+        all_prompts = []
+        instruction_metadata = []  # Track which responses belong to which instruction
+        
+        for batch_idx, example in enumerate(instruction_batch):
             instruction = example.get('instruction') or example.get('prompt', '')
             category = self.detect_category(instruction)
             category_counts[category] += 1
             
-            # Generate multiple responses (paper uses 4)
-            responses = self.generate_responses(model, tokenizer, instruction, num_responses=4)
+            # Format prompt according to model type
+            if "mistral" in self.config.model_id.lower():
+                prompt = f"[INST] {instruction} [/INST]"
+            else:
+                messages = [{"role": "user", "content": instruction}]
+                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             
-            # Self-evaluate responses with category-specific prompt (batch evaluation)
+            # Add num_responses copies of this prompt to the batch
+            for response_idx in range(num_responses):
+                all_prompts.append(prompt)
+                instruction_metadata.append({
+                    'batch_idx': batch_idx,
+                    'response_idx': response_idx,
+                    'instruction': instruction,
+                    'category': category
+                })
+        
+        # Generate ALL responses in one massive batch (instruction_batch_size × num_responses)
+        print(f"🚀 Generating {len(all_prompts)} responses in single batch...")
+        
+        inputs = tokenizer(all_prompts, return_tensors="pt", truncation=True, max_length=512, padding=True)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=PAPER_HYPERPARAMETERS["max_new_tokens"],
+                temperature=PAPER_HYPERPARAMETERS["temperature"],
+                do_sample=True,
+                top_p=0.9,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        
+        # Decode all responses
+        all_responses = []
+        for output in outputs:
+            response = tokenizer.decode(output[inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+            all_responses.append(response.strip())
+        
+        # Clear generation memory immediately
+        del inputs, outputs
+        torch.cuda.empty_cache()
+        
+        # Group responses back by instruction and evaluate each instruction's responses
+        batch_preferences = []
+        
+        for inst_idx in range(len(instruction_batch)):
+            # Get the num_responses responses for this instruction
+            start_idx = inst_idx * num_responses
+            end_idx = start_idx + num_responses
+            responses = all_responses[start_idx:end_idx]
+            
+            # Get metadata for this instruction
+            instruction = instruction_metadata[start_idx]['instruction']
+            category = instruction_metadata[start_idx]['category']
+            
+            # Batch evaluate these responses
             scores = self.evaluate_responses_batch(model, tokenizer, instruction, responses, category)
             
             # Create preference pair
             best_idx = np.argmax(scores)
             worst_idx = np.argmin(scores)
             
-            if best_idx != worst_idx and scores[best_idx] - scores[worst_idx] > 0.1:  # Min difference threshold
-                preferences.append({
+            if best_idx != worst_idx and scores[best_idx] - scores[worst_idx] > 0.1:
+                batch_preferences.append({
                     'instruction': instruction,
                     'chosen': responses[best_idx],
                     'rejected': responses[worst_idx],
@@ -338,8 +453,7 @@ class IterativeIPO:
                     'rejected_score': scores[worst_idx]
                 })
         
-        print(f"Category distribution: {category_counts}")
-        return Dataset.from_list(preferences)
+        return batch_preferences
     
     def train_iteration(self, model, tokenizer, train_dataset, eval_dataset, iteration: int):
         """Train one iteration with paper-aligned configuration"""
@@ -606,36 +720,169 @@ class IterativeIPO:
         wandb.finish()
     
     def evaluate_cross_dataset(self, model, tokenizer, eval_datasets: Dict[str, Dataset]) -> Dict[str, float]:
-        """Evaluate model performance across multiple datasets"""
+        """Evaluate model performance across multiple datasets with batching for efficiency"""
         scores = {}
+        eval_batch_size = getattr(self.config, 'eval_batch_size', PAPER_HYPERPARAMETERS.get("eval_batch_size", 16))
         
         for dataset_name, dataset in eval_datasets.items():
-            correct = 0
-            total = 0
-            
-            for example in tqdm(dataset[:100], desc=f"Evaluating on {dataset_name}"):
-                # Handle different dataset formats
-                if isinstance(example, str):
-                    instruction = example
-                else:
-                    instruction = example.get('question') or example.get('instruction') or example.get('prompt', '')
+            try:
+                # Use batched evaluation for efficiency
+                accuracy = self._evaluate_dataset_batched(
+                    model, tokenizer, dataset_name, dataset[:100], eval_batch_size
+                )
+                scores[dataset_name] = accuracy
                 
-                # Only evaluate if we have preference pairs
-                if not isinstance(example, str) and 'chosen' in example and 'rejected' in example:
-                    chosen_score = self.evaluate_response(
-                        model, tokenizer, instruction, example['chosen']
-                    )
-                    rejected_score = self.evaluate_response(
-                        model, tokenizer, instruction, example['rejected']
-                    )
-                    
-                    if chosen_score > rejected_score:
-                        correct += 1
-                    total += 1
-            
-            scores[dataset_name] = correct / total if total > 0 else 0.0
+            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+                print(f"Batched evaluation failed for {dataset_name} ({e}), falling back to sequential...")
+                # Fallback to sequential evaluation
+                scores[dataset_name] = self._evaluate_dataset_sequential(
+                    model, tokenizer, dataset_name, dataset[:100]
+                )
         
         return scores
+    
+    def _evaluate_dataset_batched(self, model, tokenizer, dataset_name: str, dataset, batch_size: int) -> float:
+        """Batch evaluate a dataset for maximum GPU efficiency"""
+        # Collect all evaluation pairs
+        eval_pairs = []
+        
+        for example in dataset:
+            # Handle different dataset formats
+            if isinstance(example, str):
+                continue  # Skip string-only examples
+            
+            instruction = example.get('question') or example.get('instruction') or example.get('prompt', '')
+            
+            # Only process if we have preference pairs
+            if 'chosen' in example and 'rejected' in example and instruction:
+                eval_pairs.append({
+                    'instruction': instruction,
+                    'chosen': example['chosen'],
+                    'rejected': example['rejected']
+                })
+        
+        if not eval_pairs:
+            return 0.0
+        
+        print(f"🚀 Batch evaluating {len(eval_pairs)} preference pairs for {dataset_name}")
+        
+        # Process evaluation pairs in batches
+        correct = 0
+        total = len(eval_pairs)
+        
+        for batch_start in tqdm(range(0, len(eval_pairs), batch_size), 
+                               desc=f"Evaluating {dataset_name}"):
+            
+            batch_end = min(batch_start + batch_size, len(eval_pairs))
+            batch_pairs = eval_pairs[batch_start:batch_end]
+            
+            # Collect all evaluation prompts for this batch
+            chosen_prompts = []
+            rejected_prompts = []
+            instructions = []
+            categories = []
+            
+            for pair in batch_pairs:
+                instruction = pair['instruction']
+                category = self.detect_category(instruction)
+                
+                instructions.append(instruction)
+                categories.append(category)
+                
+                # Create evaluation prompts for chosen and rejected responses
+                chosen_eval_prompt = CATEGORY_EVALUATION_PROMPTS[category].format(
+                    instruction=instruction,
+                    response=pair['chosen']
+                )
+                rejected_eval_prompt = CATEGORY_EVALUATION_PROMPTS[category].format(
+                    instruction=instruction,
+                    response=pair['rejected']
+                )
+                
+                chosen_prompts.append(chosen_eval_prompt)
+                rejected_prompts.append(rejected_eval_prompt)
+            
+            # Batch evaluate all chosen responses
+            chosen_scores = self._batch_evaluate_prompts(model, tokenizer, chosen_prompts)
+            
+            # Batch evaluate all rejected responses  
+            rejected_scores = self._batch_evaluate_prompts(model, tokenizer, rejected_prompts)
+            
+            # Compare scores for this batch
+            for chosen_score, rejected_score in zip(chosen_scores, rejected_scores):
+                if chosen_score > rejected_score:
+                    correct += 1
+        
+        accuracy = correct / total if total > 0 else 0.0
+        print(f"📊 {dataset_name}: {correct}/{total} = {accuracy:.3f} accuracy")
+        return accuracy
+    
+    def _batch_evaluate_prompts(self, model, tokenizer, eval_prompts: List[str]) -> List[float]:
+        """Batch evaluate a list of evaluation prompts"""
+        if not eval_prompts:
+            return []
+        
+        # Batch tokenization
+        inputs = tokenizer(eval_prompts, return_tensors="pt", truncation=True, max_length=1024, padding=True)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        
+        scores = []
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits = outputs.logits[:, -1]  # Get last token logits for all samples
+            
+            # Get token IDs for Yes/No
+            yes_tokens = tokenizer.encode("Yes", add_special_tokens=False)
+            no_tokens = tokenizer.encode("No", add_special_tokens=False)
+            
+            # Handle different tokenizer behaviors
+            yes_token_id = yes_tokens[0] if yes_tokens else tokenizer.encode("yes", add_special_tokens=False)[0]
+            no_token_id = no_tokens[0] if no_tokens else tokenizer.encode("no", add_special_tokens=False)[0]
+            
+            # Process each sample in the batch
+            for i in range(len(eval_prompts)):
+                yes_logit = logits[i, yes_token_id].item()
+                no_logit = logits[i, no_token_id].item()
+                
+                # Softmax to get probability
+                yes_prob = torch.nn.functional.softmax(
+                    torch.tensor([yes_logit, no_logit]), dim=0
+                )[0].item()
+                
+                scores.append(yes_prob)
+        
+        # Clear memory
+        del inputs, outputs
+        torch.cuda.empty_cache()
+        
+        return scores
+    
+    def _evaluate_dataset_sequential(self, model, tokenizer, dataset_name: str, dataset) -> float:
+        """Fallback sequential evaluation if batching fails"""
+        correct = 0
+        total = 0
+        
+        for example in tqdm(dataset, desc=f"Evaluating {dataset_name} (sequential)"):
+            # Handle different dataset formats
+            if isinstance(example, str):
+                continue
+                
+            instruction = example.get('question') or example.get('instruction') or example.get('prompt', '')
+            
+            # Only evaluate if we have preference pairs
+            if 'chosen' in example and 'rejected' in example and instruction:
+                chosen_score = self.evaluate_response(
+                    model, tokenizer, instruction, example['chosen']
+                )
+                rejected_score = self.evaluate_response(
+                    model, tokenizer, instruction, example['rejected']
+                )
+                
+                if chosen_score > rejected_score:
+                    correct += 1
+                total += 1
+        
+        return correct / total if total > 0 else 0.0
     
     def calculate_preference_agreement(self, current_prefs: Dataset, previous_prefs: Dataset) -> float:
         """Calculate agreement between current and previous preference rankings"""
@@ -1235,6 +1482,8 @@ def main():
     parser.add_argument("--use_4bit", action="store_true", default=True)
     parser.add_argument("--use_rewardbench", action="store_true", default=True)
     parser.add_argument("--use_qwen", action="store_true", help="Test with Qwen models (paper's top performer)")
+    parser.add_argument("--instruction_batch_size", type=int, default=4, help="Number of instructions to batch together for GPU efficiency")
+    parser.add_argument("--eval_batch_size", type=int, default=16, help="Number of evaluations to batch together for cross-dataset evaluation")
     
     # Research experiment types
     parser.add_argument("--experiment_type", type=str, default="limit_testing", 
@@ -1271,7 +1520,9 @@ def main():
         cross_dataset_eval=args.cross_dataset_eval,
         track_degradation=args.track_degradation,
         plateau_detection_window=args.plateau_window,
-        forced_iterations=args.forced_iterations
+        forced_iterations=args.forced_iterations,
+        instruction_batch_size=args.instruction_batch_size,
+        eval_batch_size=args.eval_batch_size
     )
     
     print(f"🔬 Starting Research Experiment: {exp_name}")
@@ -1281,6 +1532,9 @@ def main():
     print(f"📝 Experiment will run for up to {args.max_iterations} iterations")
     if args.forced_iterations:
         print(f"   ⚠️ FORCED MODE: Will run exactly {args.forced_iterations} iterations")
+    print(f"🚀 GPU Optimization:")
+    print(f"   - Preference generation: {args.instruction_batch_size} instructions × 4 responses = {args.instruction_batch_size * 4} responses per batch")
+    print(f"   - Cross-dataset evaluation: {args.eval_batch_size} evaluations per batch")
     print(f"💾 Results will be saved to: {config.results_dir}")
     
     experiment = IterativeIPO(config)
