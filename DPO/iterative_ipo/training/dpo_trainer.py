@@ -14,7 +14,7 @@ class DPOTrainerWrapper:
     def __init__(self, config):
         self.config = config
     
-    def train_iteration(self, model, tokenizer, train_dataset, eval_dataset, iteration: int):
+    def train(self, model, tokenizer, train_dataset, eval_dataset, iteration: int):
         """Train one iteration with paper-aligned configuration"""
         checkpoint_path = os.path.join(self.config.checkpoint_dir, f"iteration_{iteration}")
         
