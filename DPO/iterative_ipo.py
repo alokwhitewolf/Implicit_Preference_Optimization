@@ -188,31 +188,32 @@ class IterativeIPO:
         # SFT configuration (from paper appendix)
         sft_checkpoint_path = os.path.join(self.config.checkpoint_dir, f"sft_iteration_{iteration}")
         
-        # LoRA configuration for SFT
+        # LoRA configuration for SFT - match ours.py configuration  
         sft_peft_config = LoraConfig(
-            r=PAPER_HYPERPARAMETERS["lora_r"],
-            lora_alpha=PAPER_HYPERPARAMETERS["lora_alpha"],
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-            lora_dropout=PAPER_HYPERPARAMETERS["lora_dropout"],
+            lora_alpha=128,
+            lora_dropout=0.05,
+            r=256,
             bias="none",
+            target_modules="all-linear",
             task_type=TaskType.CAUSAL_LM,
         )
         
-        # SFT training arguments (from paper Table 4)
+        # SFT training arguments - match ours.py configuration
         from transformers import TrainingArguments
         sft_args = TrainingArguments(
             output_dir=sft_checkpoint_path,
-            num_train_epochs=3,  # Paper Table 4
-            per_device_train_batch_size=4,  # Paper Table 4
-            per_device_eval_batch_size=4,
-            learning_rate=5e-4,  # Paper Table 4
+            num_train_epochs=3,  # Keep original 3 epochs for SFT
+            per_device_train_batch_size=6,  # Match ours.py batch size
+            per_device_eval_batch_size=3,  # Match ours.py batch size
+            learning_rate=5e-5,  # Match ours.py learning rate
+            optim="adamw_torch_fused",  # Match ours.py optimizer
+            max_grad_norm=0.3,  # Match ours.py
+            lr_scheduler_type="cosine",  # Match ours.py
             logging_steps=25,
             save_steps=500,
             eval_steps=500,
             evaluation_strategy="steps",
             gradient_checkpointing=True,
-            optim="adamw_torch",
-            lr_scheduler_type="cosine",
             warmup_ratio=0.1,
             bf16=True,
             remove_unused_columns=False,
@@ -609,27 +610,41 @@ class IterativeIPO:
         """Train one iteration with paper-aligned configuration"""
         checkpoint_path = os.path.join(self.config.checkpoint_dir, f"iteration_{iteration}")
         
-        # LoRA configuration from paper - use specific linear layers
+        # LoRA configuration - match ours.py configuration
         peft_config = LoraConfig(
-            r=PAPER_HYPERPARAMETERS["lora_r"],
-            lora_alpha=PAPER_HYPERPARAMETERS["lora_alpha"],
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-            lora_dropout=PAPER_HYPERPARAMETERS["lora_dropout"],
+            lora_alpha=128,
+            lora_dropout=0.05,
+            r=256,
             bias="none",
+            target_modules="all-linear",
             task_type=TaskType.CAUSAL_LM,
         )
         
-        # Training configuration
-        training_config = get_updated_training_config()
-        # Remove non-DPO parameters from training config
-        dpo_config = {k: v for k, v in training_config.items() if k != 'save_all_checkpoints'}
+        # DPO Training configuration - match ours.py exactly
         training_args = DPOConfig(
             output_dir=checkpoint_path,
-            beta=PAPER_HYPERPARAMETERS["dpo_beta"],
-            max_length=1024,
+            num_train_epochs=1,  # Match ours.py default
+            dataloader_num_workers=4,  # Match ours.py
+            per_device_train_batch_size=6,  # Match ours.py
+            per_device_eval_batch_size=3,  # Match ours.py
+            gradient_accumulation_steps=1,  # Match ours.py
+            gradient_checkpointing=True,  # Match ours.py
+            optim="adamw_torch_fused",  # Match ours.py
+            learning_rate=5e-5,  # Match ours.py
+            max_grad_norm=0.3,  # Match ours.py
+            warmup_ratio=0.1,  # Match ours.py
+            lr_scheduler_type="cosine",  # Match ours.py
+            logging_steps=25,  # Match ours.py
+            save_steps=500,  # Match ours.py
+            save_total_limit=2,  # Match ours.py
+            evaluation_strategy="steps",  # Match ours.py
+            eval_steps=300,  # Match ours.py
+            bf16=True,  # Match ours.py
+            push_to_hub=False,  # Match ours.py
+            beta=0.1,  # Match ours.py DPO beta
+            max_length=1024,  # Keep DPO-specific params
             max_completion_length=256,
             max_prompt_length=512,
-            **dpo_config,
             report_to="wandb" if wandb.run else "none",
             run_name=f"ipo_iteration_{iteration}",
         )
