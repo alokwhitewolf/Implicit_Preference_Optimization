@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from huggingface_hub import login, HfFolder
 from datasets import load_dataset, Dataset
 from trl import DPOTrainer, DPOConfig
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
@@ -73,8 +74,26 @@ class IterativeIPO:
         Path(self.config.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(self.config.results_dir).mkdir(parents=True, exist_ok=True)
         
+    def authenticate_huggingface(self):
+        """Authenticate with Hugging Face using stored token"""
+        try:
+            # Use the stored token from CLI login without prompting
+            token = HfFolder.get_token()
+            if token:
+                login(token=token)
+                print("✓ Successfully authenticated with Hugging Face using stored token")
+            else:
+                print("Warning: No stored Hugging Face token found")
+                print("Run 'huggingface-cli login' first")
+        except Exception as e:
+            print(f"Warning: Could not authenticate with Hugging Face: {e}")
+            print("Make sure you've run 'huggingface-cli login' first")
+        
     def load_model_and_tokenizer(self, checkpoint_path: Optional[str] = None):
         """Load model and tokenizer with paper-aligned configuration"""
+        # Authenticate with Hugging Face first
+        self.authenticate_huggingface()
+        
         model_path = checkpoint_path or self.config.model_id
         
         # Quantization config from paper
@@ -87,13 +106,22 @@ class IterativeIPO:
                 bnb_4bit_use_double_quant=True,
             )
         
+        # Check if flash-attention is available
+        try:
+            import flash_attn
+            attn_implementation = "flash_attention_2" if torch.cuda.is_available() else None
+            print("✓ Flash attention available")
+        except ImportError:
+            attn_implementation = None
+            print("⚠️ Flash attention not available, using standard attention")
+        
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             quantization_config=bnb_config,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
-            attn_implementation="flash_attention_2" if torch.cuda.is_available() else None,
+            attn_implementation=attn_implementation,
         )
         
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)

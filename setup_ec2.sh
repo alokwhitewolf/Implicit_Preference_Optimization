@@ -49,15 +49,34 @@ else
     echo "Conda already installed"
 fi
 
-# Clone repository
-echo "5. Cloning IPO repository..."
-if [ ! -d "Implicit_Preference_Optimization" ]; then
-    git clone https://github.com/alokwhitewolf/Implicit_Preference_Optimization.git
-    cd Implicit_Preference_Optimization
-    git checkout iterative-ipo-experiments
+# Clone repository or navigate into it
+echo "5. Ensuring IPO repository is set up..."
+REPO_NAME="Implicit_Preference_Optimization"
+REPO_URL="https://github.com/alokwhitewolf/Implicit_Preference_Optimization.git"
+BRANCH_NAME="iterative-ipo-experiments"
+
+# Check if the current directory is the repo and has a .git folder
+if [ "$(basename "$PWD")" = "$REPO_NAME" ] && [ -d ".git" ]; then
+    echo "Currently inside the '$REPO_NAME' repository."
+    echo "Fetching latest changes and checking out '$BRANCH_NAME'..."
+    git fetch --all # Fetch all remote branches
+    git checkout "$BRANCH_NAME" # Switch to the desired branch
+    git pull origin "$BRANCH_NAME" # Pull latest changes from origin for this branch
+# Check if the repo exists as a subdirectory and has a .git folder
+elif [ -d "$REPO_NAME/.git" ]; then
+    echo "'$REPO_NAME' directory exists. Navigating into it."
+    cd "$REPO_NAME"
+    echo "Fetching latest changes and checking out '$BRANCH_NAME'..."
+    git fetch --all
+    git checkout "$BRANCH_NAME"
+    git pull origin "$BRANCH_NAME"
+# If neither of the above, clone the repo
 else
-    echo "Repository already cloned"
-    cd Implicit_Preference_Optimization
+    echo "'$REPO_NAME' directory not found. Cloning repository..."
+    git clone "$REPO_URL" "$REPO_NAME" # Clone the repo into a directory named $REPO_NAME
+    cd "$REPO_NAME" # Change directory into the newly cloned repo
+    echo "Checking out '$BRANCH_NAME'..."
+    git checkout "$BRANCH_NAME" # Checkout the specified branch
 fi
 
 # Create conda environment
@@ -98,7 +117,18 @@ pip install \
 
 # Install flash-attention for faster inference (optional but recommended)
 echo "10. Installing flash-attention (optional)..."
-pip install flash-attn --no-build-isolation || echo "Flash attention installation failed (optional)"
+WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.5.8/flash_attn-2.5.8+cu118torch2.2cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+echo "Attempting to install flash-attention from pre-compiled wheel: $WHEEL_URL"
+if pip install "$WHEEL_URL"; then
+    echo "Flash attention successfully installed from pre-compiled wheel."
+else
+    echo "Pre-compiled wheel installation failed (exit code: $?). Attempting to build from source..."
+    if pip install flash-attn --no-build-isolation --use-pep517; then
+        echo "Flash attention successfully built and installed from source."
+    else
+        echo "Flash attention installation from source also failed (exit code: $?). Marking as optional failure."
+    fi
+fi
 
 # Set up Hugging Face CLI
 echo "11. Setting up Hugging Face..."
