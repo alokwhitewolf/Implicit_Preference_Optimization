@@ -3,6 +3,8 @@
 Model loading and PEFT management for Iterative IPO
 """
 
+import os
+import shutil
 import torch
 from typing import Optional, Tuple
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -79,3 +81,21 @@ class ModelManager:
             model = prepare_model_for_kbit_training(model)
             
         return model, tokenizer
+    
+    def copy_checkpoint(self, source_path: str, dest_path: str):
+        """Copy checkpoint from source to destination"""
+        if os.path.exists(source_path):
+            if os.path.exists(dest_path):
+                shutil.rmtree(dest_path)
+            shutil.copytree(source_path, dest_path)
+            print(f"✓ Copied checkpoint: {source_path} → {dest_path}")
+        else:
+            print(f"⚠️ Source checkpoint not found: {source_path}")
+    
+    def cleanup_checkpoint(self, checkpoint_path: str):
+        """Remove checkpoint directory to save disk space"""
+        if os.path.exists(checkpoint_path):
+            shutil.rmtree(checkpoint_path)
+            print(f"✓ Cleaned up checkpoint: {checkpoint_path}")
+        else:
+            print(f"⚠️ Checkpoint not found for cleanup: {checkpoint_path}")

@@ -16,6 +16,8 @@ from .core.config import ExperimentConfig, IterationMetrics
 from .core.model_manager import ModelManager
 from .core.data_manager import DataManager
 from .training.preference_gen import PreferenceGenerator
+from .training.sft_trainer import SFTTrainerWrapper
+from .training.dpo_trainer import DPOTrainerWrapper
 from .evaluation.self_evaluator import SelfEvaluator
 from .analysis.metrics import MetricsCalculator
 from .analysis.reporting import ResultsReporter
@@ -33,6 +35,8 @@ class IterativeIPO:
         self.model_manager = ModelManager(config)
         self.data_manager = DataManager(config)
         self.preference_generator = PreferenceGenerator(config)
+        self.sft_trainer = SFTTrainerWrapper(config)
+        self.dpo_trainer = DPOTrainerWrapper(config)
         self.self_evaluator = SelfEvaluator(config)
         self.metrics_calculator = MetricsCalculator(config)
         self.results_reporter = ResultsReporter(config)
@@ -160,23 +164,52 @@ class IterativeIPO:
             print("✓ Skipping SFT - using pre-trained instruct model")
             return model
         
-        # TODO: Move SFT logic to SFTTrainerWrapper
         print(f"🔧 Running SFT training on Dolly-15k (Iteration {iteration})...")
-        # [SFT training logic would go here]
-        return model
+        return self.sft_trainer.train(model, tokenizer, iteration)
     
     def _train_iteration(self, model, tokenizer, train_dataset, eval_dataset, iteration: int):
         """Train one iteration with paper-aligned configuration"""
-        # TODO: Move DPO logic to DPOTrainerWrapper
-        # [DPO training logic would go here]
-        return 0.0, 0.0  # Placeholder
+        print(f"🚀 Training DPO iteration {iteration}...")
+        return self.dpo_trainer.train(model, tokenizer, train_dataset, eval_dataset, iteration)
     
     def _should_stop_early(self) -> bool:
         """Enhanced early stopping with detailed degradation tracking for research"""
-        # TODO: Move early stopping logic to MetricsCalculator
-        return False  # Placeholder
+        if len(self.iteration_metrics) < 3:
+            return False
+        
+        # Get recent performance trend
+        recent_scores = [m.self_eval_accuracy for m in self.iteration_metrics[-3:]]
+        
+        # Check for consistent degradation
+        degradation_count = 0
+        for i in range(1, len(recent_scores)):
+            if recent_scores[i] < recent_scores[i-1]:
+                degradation_count += 1
+        
+        # Stop if degrading for 2+ consecutive iterations
+        if degradation_count >= 2:
+            print(f"⚠️ Performance degrading: {recent_scores}")
+            return True
+        
+        return False
     
     def _handle_selective_saving(self, current_performance: float, iteration: int):
         """Handle selective model saving - only keep current and best models"""
-        # TODO: Move saving logic to ModelManager
-        pass  # Placeholder
+        # Update best performance tracking
+        if current_performance > self.best_performance:
+            self.best_performance = current_performance
+            self.best_iteration = iteration
+            
+            # Save as best model
+            best_path = os.path.join(self.config.checkpoint_dir, "best")
+            current_path = os.path.join(self.config.checkpoint_dir, f"iteration_{iteration}")
+            
+            print(f"🏆 New best performance: {current_performance:.4f} (iteration {iteration})")
+            self.model_manager.copy_checkpoint(current_path, best_path)
+        
+        # Clean up old checkpoints (keep only current and best)
+        if iteration > 1:
+            old_path = os.path.join(self.config.checkpoint_dir, f"iteration_{iteration-1}")
+            if os.path.exists(old_path) and iteration-1 != self.best_iteration:
+                print(f"🧹 Cleaning up iteration {iteration-1} checkpoint")
+                self.model_manager.cleanup_checkpoint(old_path)

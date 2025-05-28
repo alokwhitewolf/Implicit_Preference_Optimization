@@ -237,7 +237,99 @@ class PreferenceGenerator:
     
     def _process_instruction_batch(self, model, tokenizer, instruction_batch, num_responses, category_counts):
         """Process a batch of instructions simultaneously for maximum GPU efficiency"""
-        # Implementation similar to original but cleaner
-        # [This would contain the batched processing logic from the original file]
-        # For brevity, I'll indicate this should be moved from the original
-        pass
+        # Collect all prompts for this batch (num_responses per instruction)
+        all_prompts = []
+        instruction_metadata = []  # Track which responses belong to which instruction
+        
+        for batch_idx, example in enumerate(instruction_batch):
+            instruction = example.get('instruction') or example.get('prompt', '')
+            category = self.detect_category(instruction)
+            category_counts[category] += 1
+            
+            # Format prompt according to model type
+            if "mistral" in self.config.model_id.lower():
+                prompt = f"[INST] {instruction} [/INST]"
+            else:
+                messages = [{"role": "user", "content": instruction}]
+                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            
+            # Add num_responses copies of this prompt to the batch
+            for response_idx in range(num_responses):
+                all_prompts.append(prompt)
+                instruction_metadata.append({
+                    'batch_idx': batch_idx,
+                    'response_idx': response_idx,
+                    'instruction': instruction,
+                    'category': category
+                })
+        
+        # Generate ALL responses in one massive batch (instruction_batch_size × num_responses)
+        print(f"🚀 Generating {len(all_prompts)} responses in single batch...")
+        
+        inputs = tokenizer(all_prompts, return_tensors="pt", truncation=True, max_length=512, padding=True)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        
+        try:
+            with torch.no_grad():
+                # Clear CUDA cache before generation
+                torch.cuda.empty_cache()
+                
+                # Add validation and safer generation parameters
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=PAPER_HYPERPARAMETERS["max_new_tokens"],
+                    temperature=max(0.1, PAPER_HYPERPARAMETERS["temperature"]),  # Ensure min temperature
+                    do_sample=True,
+                    top_p=0.9,
+                    top_k=50,  # Add top_k for stability
+                    pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    repetition_penalty=1.1,  # Prevent repetition loops
+                )
+        except Exception as e:
+            print(f"Batch generation failed: {e}")
+            torch.cuda.empty_cache()  # Clear memory on error
+            raise
+        
+        # Decode all responses
+        all_responses = []
+        for output in outputs:
+            response = tokenizer.decode(output[inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+            all_responses.append(response.strip())
+        
+        # Clear generation memory immediately
+        del inputs, outputs
+        torch.cuda.empty_cache()
+        
+        # Group responses back by instruction and evaluate each instruction's responses
+        batch_preferences = []
+        
+        for inst_idx in range(len(instruction_batch)):
+            # Get the num_responses responses for this instruction
+            start_idx = inst_idx * num_responses
+            end_idx = start_idx + num_responses
+            responses = all_responses[start_idx:end_idx]
+            
+            # Get metadata for this instruction
+            instruction = instruction_metadata[start_idx]['instruction']
+            category = instruction_metadata[start_idx]['category']
+            
+            # Batch evaluate these responses
+            scores = self.evaluate_responses_batch(model, tokenizer, instruction, responses, category)
+            
+            # Create preference pair
+            best_idx = np.argmax(scores)
+            worst_idx = np.argmin(scores)
+            
+            if best_idx != worst_idx and scores[best_idx] - scores[worst_idx] > 0.1:
+                batch_preferences.append({
+                    'instruction': instruction,
+                    'chosen': responses[best_idx],
+                    'rejected': responses[worst_idx],
+                    'score_diff': scores[best_idx] - scores[worst_idx],
+                    'category': category,
+                    'chosen_score': scores[best_idx],
+                    'rejected_score': scores[worst_idx]
+                })
+        
+        return batch_preferences
