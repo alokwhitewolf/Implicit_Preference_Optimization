@@ -107,7 +107,7 @@ def get_updated_training_config():
         "dataloader_num_workers": 8,  # More parallel data loading
         "dataloader_pin_memory": True,  # Faster GPU transfer
         "tf32": True,  # Faster matrix operations on A100/H100
-        "group_by_length": True,  # Reduce padding overhead
+        "group_by_length": False,  # Disabled - requires input_ids key in dataset
         "dataloader_prefetch_factor": 4,  # Prefetch more batches
     }
 

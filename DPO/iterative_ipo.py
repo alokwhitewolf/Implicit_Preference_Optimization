@@ -51,15 +51,22 @@ class ExperimentConfig:
     model_id: str
     base_dataset: str
     eval_datasets: List[str]
-    max_iterations: int = 10
+    max_iterations: int = 25  # Increased to test limits
     samples_per_iteration: int = 1000
-    early_stopping_patience: int = 3
-    performance_threshold: float = 0.01
+    early_stopping_patience: int = 5  # More patient to observe degradation
+    performance_threshold: float = 0.005  # More sensitive threshold
     checkpoint_dir: str = "./checkpoints"
     results_dir: str = "./results"
     wandb_project: str = "iterative-ipo"
     use_4bit: bool = True  # Paper uses quantization
     use_rewardbench: bool = True  # Evaluate on RewardBench
+    
+    # New parameters for research objectives
+    save_all_checkpoints: bool = True  # Save every iteration for analysis
+    cross_dataset_eval: bool = True  # Evaluate on all datasets every iteration
+    track_degradation: bool = True  # Detailed degradation tracking
+    plateau_detection_window: int = 3  # Window for plateau detection
+    forced_iterations: int = None  # Force specific number of iterations (ignore early stopping)
     
 class IterativeIPO:
     """Main class for iterative self-improvement experiments"""
@@ -337,11 +344,11 @@ class IterativeIPO:
         """Train one iteration with paper-aligned configuration"""
         checkpoint_path = os.path.join(self.config.checkpoint_dir, f"iteration_{iteration}")
         
-        # LoRA configuration from paper
+        # LoRA configuration from paper - use specific linear layers
         peft_config = LoraConfig(
             r=PAPER_HYPERPARAMETERS["lora_r"],
             lora_alpha=PAPER_HYPERPARAMETERS["lora_alpha"],
-            target_modules="all-linear",
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
             lora_dropout=PAPER_HYPERPARAMETERS["lora_dropout"],
             bias="none",
             task_type=TaskType.CAUSAL_LM,
@@ -352,6 +359,9 @@ class IterativeIPO:
         training_args = DPOConfig(
             output_dir=checkpoint_path,
             beta=PAPER_HYPERPARAMETERS["dpo_beta"],
+            max_length=1024,
+            max_completion_length=256,
+            max_prompt_length=512,
             **training_config,
             report_to="wandb" if wandb.run else "none",
             run_name=f"ipo_iteration_{iteration}",
@@ -380,9 +390,6 @@ class IterativeIPO:
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
             processing_class=tokenizer,
-            max_length=1024,
-            max_target_length=256,
-            max_prompt_length=512,
         )
         
         # Train
@@ -403,8 +410,10 @@ class IterativeIPO:
             return {}
         
         try:
+            print("Loading RewardBench dataset...")
             # Load RewardBench dataset
-            rewardbench = load_dataset("allenai/reward-bench", split="test")
+            rewardbench = load_dataset("allenai/reward-bench", split="filtered")
+            print(f"✓ Loaded RewardBench with {len(rewardbench)} examples")
             
             subset_scores = {}
             for subset in ['alpacaeval-easy', 'chat_easy', 'math-prm']:  # Sample subsets
@@ -416,15 +425,23 @@ class IterativeIPO:
                 total = min(len(subset_data), 100)  # Limit evaluation size
                 
                 for example in subset_data.select(range(total)):
+                    # Handle different field names in RewardBench dataset
+                    instruction = example.get('instruction') or example.get('prompt') or example.get('question', '')
+                    chosen = example.get('chosen', '')
+                    rejected = example.get('rejected', '')
+                    
+                    if not instruction or not chosen or not rejected:
+                        continue
+                        
                     chosen_score = self.evaluate_response(
                         model, tokenizer, 
-                        example['instruction'], 
-                        example['chosen']
+                        instruction, 
+                        chosen
                     )
                     rejected_score = self.evaluate_response(
                         model, tokenizer,
-                        example['instruction'],
-                        example['rejected']
+                        instruction,
+                        rejected
                     )
                     
                     if chosen_score > rejected_score:
@@ -436,6 +453,7 @@ class IterativeIPO:
             
         except Exception as e:
             print(f"RewardBench evaluation failed: {e}")
+            print(f"Skipping RewardBench evaluation and continuing...")
             return {}
     
     def run_experiment(self):
@@ -595,9 +613,14 @@ class IterativeIPO:
             total = 0
             
             for example in tqdm(dataset[:100], desc=f"Evaluating on {dataset_name}"):
-                instruction = example.get('question') or example.get('instruction') or example.get('prompt', '')
+                # Handle different dataset formats
+                if isinstance(example, str):
+                    instruction = example
+                else:
+                    instruction = example.get('question') or example.get('instruction') or example.get('prompt', '')
                 
-                if 'chosen' in example and 'rejected' in example:
+                # Only evaluate if we have preference pairs
+                if not isinstance(example, str) and 'chosen' in example and 'rejected' in example:
                     chosen_score = self.evaluate_response(
                         model, tokenizer, instruction, example['chosen']
                     )
@@ -618,18 +641,30 @@ class IterativeIPO:
         if previous_prefs is None or len(previous_prefs) == 0:
             return 1.0
         
-        agreements = []
-        for curr in current_prefs[:100]:
-            # Find matching instruction in previous preferences
-            matching = [p for p in previous_prefs if p['instruction'] == curr['instruction']]
-            if matching:
-                prev = matching[0]
-                # Check if preference order is maintained (considering score differences)
-                curr_prefers_chosen = curr['chosen_score'] > curr['rejected_score']
-                prev_prefers_chosen = prev['chosen_score'] > prev['rejected_score']
-                agreements.append(float(curr_prefers_chosen == prev_prefers_chosen))
-        
-        return np.mean(agreements) if agreements else 0.0
+        try:
+            agreements = []
+            # Convert datasets to lists for easier comparison
+            current_list = current_prefs.to_list() if hasattr(current_prefs, 'to_list') else list(current_prefs)
+            previous_list = previous_prefs.to_list() if hasattr(previous_prefs, 'to_list') else list(previous_prefs)
+            
+            # Limit to first 100 for performance
+            current_sample = current_list[:100]
+            
+            for curr in current_sample:
+                # Find matching instruction in previous preferences
+                matching = [p for p in previous_list if p.get('instruction') == curr.get('instruction')]
+                if matching:
+                    prev = matching[0]
+                    # Check if preference order is maintained (considering score differences)
+                    curr_prefers_chosen = curr.get('chosen_score', 0) > curr.get('rejected_score', 0)
+                    prev_prefers_chosen = prev.get('chosen_score', 0) > prev.get('rejected_score', 0)
+                    agreements.append(float(curr_prefers_chosen == prev_prefers_chosen))
+            
+            return np.mean(agreements) if agreements else 0.0
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate preference agreement: {e}")
+            return 0.0
     
     def calculate_response_diversity(self, dataset: Dataset) -> float:
         """Calculate diversity of generated responses"""
@@ -638,7 +673,10 @@ class IterativeIPO:
         
         all_responses = []
         for example in dataset[:100]:
-            all_responses.extend([example['chosen'], example['rejected']])
+            # Handle both dict and string formats
+            if isinstance(example, dict):
+                all_responses.extend([example['chosen'], example['rejected']])
+            # Skip if example is not a dict (shouldn't happen in our preference dataset)
         
         # Calculate unique n-grams
         all_ngrams = []
@@ -662,50 +700,145 @@ class IterativeIPO:
         return diversity_score * (1 + min(length_variance / 1000, 1))  # Weighted by length variance
     
     def should_stop_early(self) -> bool:
-        """Enhanced early stopping with category-specific checks"""
+        """Enhanced early stopping with detailed degradation tracking for research"""
+        # If forced iterations specified, ignore early stopping
+        if self.config.forced_iterations and len(self.iteration_metrics) < self.config.forced_iterations:
+            return False
+            
         if len(self.iteration_metrics) < self.config.early_stopping_patience:
             return False
         
+        # For research: Track but don't stop early unless explicitly degrading
+        if not self.config.track_degradation:
+            return False
+        
         recent_metrics = self.iteration_metrics[-self.config.early_stopping_patience:]
+        all_metrics = self.iteration_metrics
         
-        # Check for performance plateau
-        eval_losses = [m.eval_loss for m in recent_metrics]
-        if np.std(eval_losses) < self.config.performance_threshold:
-            print("Early stopping: Performance plateau detected")
-            return True
+        # Plateau detection with configurable window
+        window = self.config.plateau_detection_window
+        if len(all_metrics) >= window:
+            recent_scores = [m.self_eval_accuracy for m in all_metrics[-window:]]
+            if np.std(recent_scores) < self.config.performance_threshold:
+                print(f"Plateau detected: Performance variance {np.std(recent_scores):.4f} < threshold {self.config.performance_threshold}")
+                # For research: continue to observe degradation
+                if len(all_metrics) >= self.config.max_iterations * 0.8:  # Only stop if near max iterations
+                    return True
         
-        # Check for consistent degradation
-        self_eval_scores = [m.self_eval_accuracy for m in recent_metrics]
-        if all(self_eval_scores[i] <= self_eval_scores[i-1] for i in range(1, len(self_eval_scores))):
-            print("Early stopping: Consistent performance degradation detected")
-            return True
-        
-        # Check for catastrophic forgetting in any category
-        for category in ['code', 'math', 'chat']:
-            category_scores = [m.category_scores.get(category, 0) for m in recent_metrics]
-            if len(category_scores) > 1 and category_scores[-1] < category_scores[0] * 0.7:
-                print(f"Early stopping: Catastrophic forgetting in {category} category")
+        # Severe degradation detection (>20% drop from peak)
+        if len(all_metrics) >= 3:
+            peak_performance = max([m.self_eval_accuracy for m in all_metrics])
+            current_performance = all_metrics[-1].self_eval_accuracy
+            degradation_ratio = (peak_performance - current_performance) / peak_performance
+            
+            if degradation_ratio > 0.2:  # 20% degradation
+                print(f"Severe degradation detected: {degradation_ratio:.1%} drop from peak {peak_performance:.3f}")
                 return True
+        
+        # Catastrophic forgetting detection (enhanced)
+        for category in ['code', 'math', 'chat']:
+            if len(all_metrics) >= 3:
+                category_scores = [m.category_scores.get(category, 0) for m in all_metrics]
+                if any(s > 0 for s in category_scores):  # Only check if category has data
+                    peak_score = max(category_scores)
+                    current_score = category_scores[-1]
+                    if peak_score > 0 and (peak_score - current_score) / peak_score > 0.5:  # 50% drop
+                        print(f"Catastrophic forgetting in {category}: {current_score:.3f} vs peak {peak_score:.3f}")
+                        return True
+        
+        # Cross-dataset performance degradation
+        if len(all_metrics) >= 3:
+            for dataset_name in all_metrics[0].cross_dataset_scores.keys():
+                dataset_scores = [m.cross_dataset_scores.get(dataset_name, 0) for m in all_metrics]
+                if len(dataset_scores) >= 3:
+                    peak_dataset_score = max(dataset_scores)
+                    current_dataset_score = dataset_scores[-1]
+                    if peak_dataset_score > 0 and (peak_dataset_score - current_dataset_score) / peak_dataset_score > 0.3:
+                        print(f"Severe degradation on {dataset_name}: {current_dataset_score:.3f} vs peak {peak_dataset_score:.3f}")
+                        # Don't stop immediately, just warn
         
         return False
     
     def save_results(self):
-        """Save experiment results with additional paper-specific metrics"""
+        """Save experiment results with detailed degradation analysis for research"""
+        if not self.iteration_metrics:
+            return
+            
+        # Calculate detailed performance analysis
+        self_eval_scores = [m.self_eval_accuracy for m in self.iteration_metrics]
+        peak_performance = max(self_eval_scores)
+        peak_iteration = self_eval_scores.index(peak_performance) + 1
+        final_performance = self_eval_scores[-1]
+        
+        # Calculate degradation patterns
+        degradation_analysis = {
+            "peak_performance": peak_performance,
+            "peak_iteration": peak_iteration,
+            "final_performance": final_performance,
+            "total_degradation": (peak_performance - final_performance) / peak_performance if peak_performance > 0 else 0,
+            "iterations_after_peak": len(self.iteration_metrics) - peak_iteration,
+            "plateau_detected": False,
+            "catastrophic_forgetting": {}
+        }
+        
+        # Detect plateau
+        if len(self.iteration_metrics) >= 5:
+            last_5_scores = self_eval_scores[-5:]
+            degradation_analysis["plateau_detected"] = np.std(last_5_scores) < self.config.performance_threshold
+        
+        # Category-wise degradation analysis
+        for category in ['code', 'math', 'chat', 'safety', 'reasoning']:
+            category_scores = [m.category_scores.get(category, 0) for m in self.iteration_metrics]
+            if any(s > 0 for s in category_scores):
+                cat_peak = max(category_scores)
+                cat_final = category_scores[-1]
+                degradation_analysis["catastrophic_forgetting"][category] = {
+                    "peak_score": cat_peak,
+                    "final_score": cat_final,
+                    "degradation_ratio": (cat_peak - cat_final) / cat_peak if cat_peak > 0 else 0,
+                    "peak_iteration": category_scores.index(cat_peak) + 1
+                }
+        
+        # Cross-dataset performance analysis
+        cross_dataset_analysis = {}
+        if self.iteration_metrics[0].cross_dataset_scores:
+            for dataset_name in self.iteration_metrics[0].cross_dataset_scores.keys():
+                dataset_scores = [m.cross_dataset_scores.get(dataset_name, 0) for m in self.iteration_metrics]
+                ds_peak = max(dataset_scores) if dataset_scores else 0
+                ds_final = dataset_scores[-1] if dataset_scores else 0
+                cross_dataset_analysis[dataset_name] = {
+                    "peak_score": ds_peak,
+                    "final_score": ds_final,
+                    "degradation_ratio": (ds_peak - ds_final) / ds_peak if ds_peak > 0 else 0,
+                    "peak_iteration": dataset_scores.index(ds_peak) + 1 if ds_peak > 0 else 1
+                }
+        
         results = {
             "config": asdict(self.config),
             "hyperparameters": PAPER_HYPERPARAMETERS,
             "metrics": [asdict(m) for m in self.iteration_metrics],
             "model_family": self.config.model_id.split("/")[0],
+            "degradation_analysis": degradation_analysis,
+            "cross_dataset_analysis": cross_dataset_analysis,
             "final_performance": {
                 "iterations_completed": len(self.iteration_metrics),
-                "peak_performance": max([m.self_eval_accuracy for m in self.iteration_metrics]) if self.iteration_metrics else 0,
-                "final_performance": self.iteration_metrics[-1].self_eval_accuracy if self.iteration_metrics else 0,
+                "peak_performance": peak_performance,
+                "final_performance": final_performance,
+                "performance_trajectory": self_eval_scores
             }
         }
         
         results_file = os.path.join(self.config.results_dir, "iteration_metrics.json")
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
+            
+        # Save detailed degradation summary
+        degradation_file = os.path.join(self.config.results_dir, "degradation_analysis.json")
+        with open(degradation_file, 'w') as f:
+            json.dump({
+                "degradation_analysis": degradation_analysis,
+                "cross_dataset_analysis": cross_dataset_analysis
+            }, f, indent=2)
     
     def generate_plots(self):
         """Generate comprehensive visualizations including category-specific analysis"""
@@ -930,18 +1063,38 @@ class IterativeIPO:
         plt.close()
 
 def main():
-    parser = argparse.ArgumentParser(description="Iterative IPO Experiments (Paper-Aligned)")
+    parser = argparse.ArgumentParser(description="Iterative IPO Experiments - Research on Self-Improvement Limits")
+    
+    # Basic model and dataset config
     parser.add_argument("--model_id", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--base_dataset", type=str, default="databricks/databricks-dolly-15k")
     parser.add_argument("--eval_datasets", nargs="+", default=["truthful_qa", "gsm8k", "hellaswag"])
-    parser.add_argument("--max_iterations", type=int, default=10)
+    
+    # Research-focused parameters
+    parser.add_argument("--max_iterations", type=int, default=25, help="Maximum iterations to test limits")
+    parser.add_argument("--forced_iterations", type=int, default=None, help="Force exact number of iterations (ignore early stopping)")
     parser.add_argument("--samples_per_iteration", type=int, default=1000)
-    parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints/iterative_ipo_v2")
-    parser.add_argument("--results_dir", type=str, default="./results/iterative_ipo_v2")
-    parser.add_argument("--wandb_project", type=str, default="iterative-ipo-paper-aligned")
+    
+    # Research control parameters
+    parser.add_argument("--track_degradation", action="store_true", default=True, help="Enable detailed degradation tracking")
+    parser.add_argument("--cross_dataset_eval", action="store_true", default=True, help="Evaluate on all datasets every iteration")
+    parser.add_argument("--save_all_checkpoints", action="store_true", default=True, help="Save checkpoint every iteration")
+    parser.add_argument("--plateau_window", type=int, default=3, help="Window size for plateau detection")
+    
+    # Output directories
+    parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints/self_improvement_limits")
+    parser.add_argument("--results_dir", type=str, default="./results/self_improvement_limits")
+    parser.add_argument("--wandb_project", type=str, default="ipo-self-improvement-limits")
+    
+    # Technical parameters
     parser.add_argument("--use_4bit", action="store_true", default=True)
     parser.add_argument("--use_rewardbench", action="store_true", default=True)
     parser.add_argument("--use_qwen", action="store_true", help="Test with Qwen models (paper's top performer)")
+    
+    # Research experiment types
+    parser.add_argument("--experiment_type", type=str, default="limit_testing", 
+                       choices=["limit_testing", "cross_dataset_transfer", "both"],
+                       help="Type of research experiment to run")
     
     args = parser.parse_args()
     
@@ -950,18 +1103,40 @@ def main():
         args.model_id = "Qwen/Qwen2.5-1.5B-Instruct"
         print("Testing with Qwen model as per paper's findings...")
     
+    # Create experiment name based on configuration
+    model_name = args.model_id.split("/")[-1]
+    exp_name = f"{model_name}_{args.experiment_type}_{args.max_iterations}iter"
+    if args.forced_iterations:
+        exp_name += f"_forced{args.forced_iterations}"
+    
     config = ExperimentConfig(
         model_id=args.model_id,
         base_dataset=args.base_dataset,
         eval_datasets=args.eval_datasets,
         max_iterations=args.max_iterations,
         samples_per_iteration=args.samples_per_iteration,
-        checkpoint_dir=args.checkpoint_dir,
-        results_dir=args.results_dir,
+        checkpoint_dir=f"{args.checkpoint_dir}/{exp_name}",
+        results_dir=f"{args.results_dir}/{exp_name}",
         wandb_project=args.wandb_project,
         use_4bit=args.use_4bit,
-        use_rewardbench=args.use_rewardbench
+        use_rewardbench=args.use_rewardbench,
+        
+        # Research-specific configs
+        save_all_checkpoints=args.save_all_checkpoints,
+        cross_dataset_eval=args.cross_dataset_eval,
+        track_degradation=args.track_degradation,
+        plateau_detection_window=args.plateau_window,
+        forced_iterations=args.forced_iterations
     )
+    
+    print(f"🔬 Starting Research Experiment: {exp_name}")
+    print(f"📊 Research Questions:")
+    print(f"   1. How many iterations before performance plateaus/degrades?")
+    print(f"   2. How does training on {args.base_dataset} affect {args.eval_datasets}?")
+    print(f"📝 Experiment will run for up to {args.max_iterations} iterations")
+    if args.forced_iterations:
+        print(f"   ⚠️ FORCED MODE: Will run exactly {args.forced_iterations} iterations")
+    print(f"💾 Results will be saved to: {config.results_dir}")
     
     experiment = IterativeIPO(config)
     experiment.run_experiment()
