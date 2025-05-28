@@ -222,9 +222,18 @@ class IterativeIPO:
             run_name=f"sft_iteration_{iteration}",
         )
         
-        # Apply LoRA to model
-        model = get_peft_model(model, sft_peft_config)
-        model.print_trainable_parameters()
+        # Apply LoRA to model - check if model already has PEFT adapters to avoid double application
+        if hasattr(model, 'peft_config') and model.peft_config:
+            print("✓ Model already has PEFT adapters, skipping get_peft_model")
+            # Model already has PEFT adapters from previous iteration
+            if hasattr(model, 'print_trainable_parameters'):
+                model.print_trainable_parameters()
+            else:
+                print("✓ Model has PEFT adapters but print_trainable_parameters not available")
+        else:
+            print("✓ Applying PEFT adapters to model")
+            model = get_peft_model(model, sft_peft_config)
+            model.print_trainable_parameters()
         
         # Create SFT trainer
         sft_trainer = SFTTrainer(
@@ -650,9 +659,18 @@ class IterativeIPO:
             run_name=f"ipo_iteration_{iteration}",
         )
         
-        # Apply LoRA
-        model = get_peft_model(model, peft_config)
-        model.print_trainable_parameters()
+        # Apply LoRA - check if model already has PEFT adapters to avoid double application
+        if hasattr(model, 'peft_config') and model.peft_config:
+            print("✓ Model already has PEFT adapters, skipping get_peft_model")
+            # Model already has PEFT adapters from previous iteration
+            if hasattr(model, 'print_trainable_parameters'):
+                model.print_trainable_parameters()
+            else:
+                print("✓ Model has PEFT adapters but print_trainable_parameters not available")
+        else:
+            print("✓ Applying PEFT adapters to model")
+            model = get_peft_model(model, peft_config)
+            model.print_trainable_parameters()
         
         # The dataset is already in DPO format from save_preference_data()
         # No need to reformat - it already has prompt, chosen, rejected keys
