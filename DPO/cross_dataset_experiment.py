@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
 """
 Cross-Dataset Transfer Analysis for IPO Research
-Tests how self-improvement on one dataset affects performance on others
+
+SEPARATE EXPERIMENT from iterative_ipo.py
+
+Purpose: Test how preference training on Dataset A affects performance on Datasets B, C, D
+This is NOT part of the main self-improvement dynamics study
+
+Example usage:
+python cross_dataset_experiment.py \
+    --datasets "Ayush-Singh/UltraFeedback-1k-Each" "databricks/databricks-dolly-15k" \
+    --max_iterations 10 \
+    --model_id meta-llama/Llama-3.2-1B-Instruct
+
+This will:
+1. Train on UltraFeedback, evaluate on Dolly-15k  
+2. Train on Dolly-15k, evaluate on UltraFeedback
+3. Generate transfer analysis report
 """
 
 import os

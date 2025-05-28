@@ -10,11 +10,11 @@ echo ""
 # Experiment 1: Test iteration limits with different models
 echo "=== Experiment 1: Self-Improvement Limits Testing ==="
 
-# Test 1A: Small model with forced long run (to observe full degradation cycle)
-echo "🧪 Test 1A: Llama-1B with 30 forced iterations"
+# Test 1A: Small instruct model with forced long run (to observe full degradation cycle)
+echo "🧪 Test 1A: Llama-1B-Instruct with 15 forced iterations (balanced dataset)"
 python DPO/iterative_ipo.py \
     --model_id "meta-llama/Llama-3.2-1B-Instruct" \
-    --base_dataset "databricks/databricks-dolly-15k" \
+    --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
     --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
     --forced_iterations 15 \
     --samples_per_iteration 500 \
@@ -26,11 +26,11 @@ python DPO/iterative_ipo.py \
 
 echo "✅ Test 1A completed!"
 
-# Test 1B: Qwen model comparison (paper's top performer)
-echo "🧪 Test 1B: Qwen-1.5B with natural stopping"
+# Test 1B: Qwen instruct model comparison (paper's top performer)
+echo "🧪 Test 1B: Qwen-1.5B-Instruct with natural stopping (balanced dataset)"
 python DPO/iterative_ipo.py \
     --use_qwen \
-    --base_dataset "databricks/databricks-dolly-15k" \
+    --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
     --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
     --max_iterations 15 \
     --instruction_batch_size 64 \
@@ -44,11 +44,14 @@ echo "✅ Test 1B completed!"
 # Experiment 2: Cross-dataset transfer analysis
 echo "=== Experiment 2: Cross-Dataset Transfer Analysis ==="
 
-echo "🧪 Test 2A: Training on different datasets, evaluating on all"
-python DPO/cross_dataset_experiment.py \
+echo "🧪 Test 2A: Training on balanced dataset, evaluating cross-dataset transfer"
+python DPO/iterative_ipo.py \
     --model_id "meta-llama/Llama-3.2-1B-Instruct" \
-    --datasets "databricks/databricks-dolly-15k" "tatsu-lab/alpaca" \
+    --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
+    --eval_datasets "truthful_qa" "gsm8k" "hellaswag" "tatsu-lab/alpaca" \
     --max_iterations 12 \
+    --samples_per_iteration 500 \
+    --experiment_type "cross_dataset_transfer" \
     --results_dir "./results/cross_dataset_transfer"
 
 echo "✅ Test 2A completed!"
@@ -57,10 +60,10 @@ echo "✅ Test 2A completed!"
 echo "=== Experiment 3: Sample Size Impact on Self-Improvement ==="
 
 for samples in 250 500 1000; do
-    echo "🧪 Test 3: Running with $samples samples per iteration..."
+    echo "🧪 Test 3: Running with $samples samples per iteration (balanced dataset)..."
     python DPO/iterative_ipo.py \
         --model_id "meta-llama/Llama-3.2-1B-Instruct" \
-        --base_dataset "databricks/databricks-dolly-15k" \
+        --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
         --eval_datasets "truthful_qa" "gsm8k" \
         --max_iterations 15 \
         --samples_per_iteration $samples \
@@ -75,25 +78,23 @@ done
 # Experiment 4: Different datasets as training base
 echo "=== Experiment 4: Different Training Datasets Impact ==="
 
-for dataset in "databricks/databricks-dolly-15k" "tatsu-lab/alpaca"; do
-    dataset_name=$(echo $dataset | sed 's/.*\///') # Extract name after last /
-    echo "🧪 Test 4: Training on $dataset_name"
-    
-    python DPO/iterative_ipo.py \
-        --model_id "meta-llama/Llama-3.2-1B-Instruct" \
-        --base_dataset "$dataset" \
-        --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
-        --max_iterations 15 \
-        --instruction_batch_size 64 \
-        --samples_per_iteration 500 \
-        --experiment_type "limit_testing" \
-        --track_degradation \
-        --cross_dataset_eval \
-        --results_dir "./results/base_dataset_impact/$dataset_name" \
-        --checkpoint_dir "./checkpoints/base_dataset_impact/$dataset_name"
-    
-    echo "✅ Training on $dataset_name completed!"
-done
+# Use balanced UltraFeedback dataset for consistent comparison
+echo "🧪 Test 4: Training on UltraFeedback balanced dataset (instruct model)"
+
+python DPO/iterative_ipo.py \
+    --model_id "meta-llama/Llama-3.2-1B-Instruct" \
+    --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
+    --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
+    --max_iterations 15 \
+    --instruction_batch_size 64 \
+    --samples_per_iteration 500 \
+    --experiment_type "limit_testing" \
+    --track_degradation \
+    --cross_dataset_eval \
+    --results_dir "./results/balanced_dataset_impact" \
+    --checkpoint_dir "./checkpoints/balanced_dataset_impact"
+
+echo "✅ Balanced dataset training completed!"
 
 # Analysis and Summary
 echo "=== Final Analysis and Summary ==="

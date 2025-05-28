@@ -22,7 +22,7 @@ PAPER_MODELS = {
 # Updated hyperparameters from paper
 PAPER_HYPERPARAMETERS = {
     "dpo_beta": 0.1,  # From original implementation
-    "learning_rate": 3.75e-5, # reduced to account for higher batch size
+    "learning_rate": 5e-5, # Match ours.py default learning rate
     "lora_r": 256,
     "lora_alpha": 128,
     "lora_dropout": 0.05,
@@ -95,15 +95,18 @@ REWARDBENCH_SUBSETS = [
 # Training configuration updates
 def get_updated_training_config():
     return {
-        "per_device_train_batch_size": 8,  # Increased to use more GPU memory
-        "per_device_eval_batch_size": 64,  # Higher for eval since no gradients
+        "per_device_train_batch_size": 6,  # Match ours.py batch size
+        "per_device_eval_batch_size": 3,  # Match ours.py batch size
         "gradient_accumulation_steps": 1,
         "gradient_checkpointing": True,
+        "optim": "adamw_torch_fused",  # Match ours.py optimizer
         "learning_rate": PAPER_HYPERPARAMETERS["learning_rate"],
+        "max_grad_norm": 0.3,  # Match ours.py
+        "lr_scheduler_type": "cosine",  # Match ours.py
         "bf16": True,  # Or fp16 depending on hardware
-        "logging_steps": 10,
-        "eval_steps": 200,  # Reduced frequency for speed
-        "save_steps": 200,  # Reduced frequency for speed
+        "logging_steps": 25,  # Match ours.py
+        "eval_steps": 300,  # Match ours.py
+        "save_steps": 500,  # Match ours.py
         "num_train_epochs": 1,  # Paper uses 1 epoch
         "warmup_ratio": 0.1,
         "remove_unused_columns": False,
@@ -112,6 +115,9 @@ def get_updated_training_config():
         "tf32": True,  # Faster matrix operations on A100/H100
         "group_by_length": False,  # Disabled - requires input_ids key in dataset
         "dataloader_prefetch_factor": 4,  # Prefetch more batches
+        
+        # Storage optimization - only save best and current models
+        "save_all_checkpoints": False,  # Enable selective model saving for storage efficiency
     }
 
 # Dataset configurations from paper
@@ -121,8 +127,15 @@ DATASET_CONFIGS = {
         "train_size": 11000,  # Paper uses this split
         "eval_size": 2750,
     },
-    "custom_ultrafeedback": {
+    "balanced_ultrafeedback": {
         "name": "Ayush-Singh/UltraFeedback-1k-Each",
-        "splits": ["split_1", "split_2", "split_3"]
+        "splits": ["split_1", "split_2", "split_3"],
+        "description": "Balanced dataset with 1k examples per category (code, math, chat, safety, reasoning)"
+    },
+    # Default dataset - switch from chat-heavy dolly to balanced ultrafeedback
+    "default": {
+        "name": "Ayush-Singh/UltraFeedback-1k-Each", 
+        "split": "split_1",
+        "description": "Balanced 1k examples across all categories - fixes dataset skew issue"
     }
 }
