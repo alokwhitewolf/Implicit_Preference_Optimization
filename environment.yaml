@@ -7,7 +7,7 @@ channels:
   - defaults
 dependencies:
   - python=3.10
-  - pytorch=2.5.1
+  - pytorch=2.6.0
   - pytorch-cuda=12.4
   - pip
   - pip:
@@ -16,3 +16,13 @@ dependencies:
     - tqdm==4.67.1
     - transformers==4.47.0
     - accelerate
+    - peft==0.14.0
+    - bitsandbytes==0.45.0
+    - trl==0.13.0
+    - wandb
+    - matplotlib
+    - seaborn
+    - scipy
+    - scikit-learn
+    # Flash Attention - install separately with: pip install flash-attn --no-build-isolation
+    # Make sure PyTorch CUDA version matches system CUDA version first!

@@ -114,6 +114,25 @@ pip install transformers==4.47.0 datasets==3.2.0 accelerate==1.2.1 \
             wandb matplotlib seaborn tqdm scipy scikit-learn
 ```
 
+### 7. Install Flash Attention (Critical for Performance)
+```bash
+# First, check your CUDA version
+nvidia-smi  # Look for "CUDA Version: X.Y"
+
+# Install PyTorch with matching CUDA version
+# For CUDA 12.4:
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
+# For CUDA 11.8:
+pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu118
+
+# Then install Flash Attention (should use pre-compiled wheels):
+pip install flash-attn --no-build-isolation
+
+# Verify installation:
+python -c "from transformers.utils import is_flash_attn_2_available; print('Flash Attention available:', is_flash_attn_2_available())"
+```
+
 ## Common Issues & Solutions
 
 ### 1. CUDA Out of Memory
@@ -144,7 +163,43 @@ pip install flash-attn --no-build-isolation
 --samples_per_iteration 500
 ```
 
-### 4. Instance Runs Out of Disk
+### 4. Flash Attention Installation Issues (CRITICAL)
+
+**Quick Fix:** Use the automated script:
+```bash
+./scripts/install_flash_attention.sh
+```
+
+**Manual Diagnosis:**
+```bash
+# Problem: Flash Attention compiles from source (takes 20-40 minutes)
+# Solution: Match CUDA versions exactly
+
+# Step 1: Check system CUDA version
+nvidia-smi | grep "CUDA Version"
+nvcc --version
+
+# Step 2: Check PyTorch CUDA version
+python -c "import torch; print('PyTorch CUDA:', torch.version.cuda)"
+
+# Step 3: If they don't match, reinstall PyTorch
+# For CUDA 12.4 systems:
+pip uninstall torch torchvision torchaudio
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
+# For CUDA 11.8 systems:
+pip uninstall torch torchvision torchaudio  
+pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu118
+
+# Step 4: Install Flash Attention (should be fast now)
+pip install flash-attn --no-build-isolation
+
+# Verify success:
+python -c "from transformers.utils import is_flash_attn_2_available; print('Flash Attention available:', is_flash_attn_2_available())"
+```
+**Note**: The `scripts/install_flash_attention.sh` script automates these steps with better error handling.
+
+### 5. Instance Runs Out of Disk
 ```bash
 # Clean up checkpoints between runs
 rm -rf checkpoints/iteration_*

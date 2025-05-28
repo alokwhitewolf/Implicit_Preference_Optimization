@@ -180,6 +180,65 @@ results/
 - `datasets`: List of datasets to include in transfer analysis
 - `max_iterations`: Iterations per training dataset (default: 5)
 
+## Performance Optimization
+
+### Flash Attention Setup (Critical for Speed)
+
+The biggest performance bottleneck is often **Flash Attention installation**. We provide automated setup:
+
+1. **Automatic Installation (Recommended)**:
+```bash
+./setup_ec2.sh  # Handles everything automatically
+```
+
+2. **Manual/Troubleshooting Installation**:
+```bash
+./scripts/install_flash_attention.sh  # Standalone script with diagnostics
+```
+
+3. **Manual Steps (Advanced Users)**:
+```bash
+# Check CUDA version compatibility
+nvidia-smi | grep "CUDA Version"
+python -c "import torch; print('PyTorch CUDA:', torch.version.cuda)"
+
+# Install matching PyTorch version
+# For CUDA 12.4 systems (most common):
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
+# Install Flash Attention (should be fast with matching versions)
+pip install flash-attn --no-build-isolation
+```
+
+**Performance Impact:**
+- ✅ **With Flash Attention**: ~2-3x faster training, better memory efficiency
+- ❌ **Without Flash Attention**: Slower training, higher memory usage
+- ⚠️ **Wrong CUDA version**: 20-40 minute compilation instead of 1-2 minutes
+
+### Memory Optimization
+
+For large models or limited GPU memory:
+
+```bash
+# Export memory allocation settings
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+# Use smaller batch sizes with gradient accumulation
+--per_device_train_batch_size 1 \
+--gradient_accumulation_steps 32
+```
+
+### Monitoring Performance
+
+Check if Flash Attention is working:
+```bash
+# Look for this message in training logs:
+"✓ Flash attention available"
+
+# Verify in Python:
+python -c "from transformers.utils import is_flash_attn_2_available; print('Flash Attention available:', is_flash_attn_2_available())"
+```
+
 ## Interpreting Results
 
 ### When to Stop Iterating

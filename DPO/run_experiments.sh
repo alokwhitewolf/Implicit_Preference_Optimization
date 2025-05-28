@@ -13,10 +13,9 @@ python DPO/iterative_ipo.py \
     --samples_per_iteration 1000 \
     --checkpoint_dir "./checkpoints/iter_limit_1b" \
     --results_dir "./results/iter_limit_1b" \
-    --wandb_project "ipo-iteration-limits" &
+    --wandb_project "ipo-iteration-limits"
 
-# Wait for GPU memory to be available
-sleep 30
+echo "=== Experiment 1 completed! ==="
 
 # Medium model (7B parameters) - if you have enough GPU memory
 # python DPO/iterative_ipo.py \
@@ -37,6 +36,8 @@ python DPO/run_cross_dataset_experiments.py \
     --experiment_name "transfer_analysis_v1" \
     --datasets "dolly" "alpaca" "gsm8k" "truthful_qa" \
     --max_iterations 5
+
+echo "=== Experiment 2 completed! ==="
 
 # Experiment 3: Different sample sizes per iteration
 echo "=== Experiment 3: Sample size impact ==="

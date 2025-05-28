@@ -95,7 +95,23 @@ conda activate ipo
 
 # Install PyTorch with CUDA support
 echo "8. Installing PyTorch with CUDA..."
-pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Check system CUDA version and install matching PyTorch
+CUDA_VERSION=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}' | cut -d. -f1,2)
+echo "Detected CUDA version: $CUDA_VERSION"
+
+if [[ "$CUDA_VERSION" == "12.4" ]]; then
+    echo "Installing PyTorch for CUDA 12.4..."
+    pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+elif [[ "$CUDA_VERSION" == "12.1" ]] || [[ "$CUDA_VERSION" == "12.2" ]] || [[ "$CUDA_VERSION" == "12.3" ]]; then
+    echo "Installing PyTorch for CUDA 12.1..."
+    pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu121
+elif [[ "$CUDA_VERSION" == "11.8" ]]; then
+    echo "Installing PyTorch for CUDA 11.8..."
+    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu118
+else
+    echo "Unsupported CUDA version $CUDA_VERSION, defaulting to CUDA 12.4..."
+    pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+fi
 
 # Install requirements from environment.yaml packages
 echo "9. Installing required packages..."
@@ -116,17 +132,20 @@ pip install \
     numpy
 
 # Install flash-attention for faster inference (optional but recommended)
-echo "10. Installing flash-attention (optional)..."
-WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.5.8/flash_attn-2.5.8+cu118torch2.2cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
-echo "Attempting to install flash-attention from pre-compiled wheel: $WHEEL_URL"
-if pip install "$WHEEL_URL"; then
-    echo "Flash attention successfully installed from pre-compiled wheel."
+echo "10. Installing flash-attention with CUDA version matching..."
+echo "Using standalone installation script for better error handling..."
+
+# Use the standalone script for Flash Attention installation
+if [ -f "scripts/install_flash_attention.sh" ]; then
+    echo "Running Flash Attention installation script..."
+    chmod +x scripts/install_flash_attention.sh
+    ./scripts/install_flash_attention.sh --non-interactive
 else
-    echo "Pre-compiled wheel installation failed (exit code: $?). Attempting to build from source..."
-    if pip install flash-attn --no-build-isolation --use-pep517; then
-        echo "Flash attention successfully built and installed from source."
+    echo "Flash Attention script not found, falling back to simple installation..."
+    if pip install flash-attn --no-build-isolation; then
+        echo "✓ Flash attention successfully installed."
     else
-        echo "Flash attention installation from source also failed (exit code: $?). Marking as optional failure."
+        echo "⚠️ Flash attention installation failed. Run ./scripts/install_flash_attention.sh manually later."
     fi
 fi
 

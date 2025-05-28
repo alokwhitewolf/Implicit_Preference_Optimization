@@ -122,6 +122,7 @@ class IterativeIPO:
             device_map="auto",
             trust_remote_code=True,
             attn_implementation=attn_implementation,
+            max_memory={0: "35GB"},  # Force using more GPU memory
         )
         
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -152,10 +153,8 @@ class IterativeIPO:
         else:
             return 'chat'
     
-    def generate_responses(self, model, tokenizer, instruction: str, num_responses: int = 4):
-        """Generate multiple responses with paper parameters"""
-        responses = []
-        
+    def generate_responses(self, model, tokenizer, instruction: str, num_responses: int = 8):
+        """Generate multiple responses with memory-efficient batching"""
         # Format instruction with proper template
         if "mistral" in self.config.model_id.lower():
             prompt = f"[INST] {instruction} [/INST]"
@@ -164,23 +163,59 @@ class IterativeIPO:
             messages = [{"role": "user", "content": instruction}]
             prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        responses = []
         
-        for _ in range(num_responses):
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=PAPER_HYPERPARAMETERS["max_new_tokens"],
-                    temperature=PAPER_HYPERPARAMETERS["temperature"],
-                    do_sample=True,
-                    top_p=0.9,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
+        # Try batch generation first, fallback to sequential if OOM
+        try:
+            # Aggressive batch generation - we have 40GB GPU, use more!
+            batch_size = num_responses  # Try all 4 at once
+            for i in range(0, num_responses, batch_size):
+                current_batch_size = min(batch_size, num_responses - i)
+                prompts = [prompt] * current_batch_size
+                inputs = tokenizer(prompts, return_tensors="pt", truncation=True, max_length=512, padding=True)
+                inputs = {k: v.to(model.device) for k, v in inputs.items()}
+                
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=PAPER_HYPERPARAMETERS["max_new_tokens"],
+                        temperature=PAPER_HYPERPARAMETERS["temperature"],
+                        do_sample=True,
+                        top_p=0.9,
+                        pad_token_id=tokenizer.pad_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
+                
+                # Decode responses for this batch
+                for output in outputs:
+                    response = tokenizer.decode(output[inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+                    responses.append(response.strip())
+                
+                # Clear memory between batches
+                del inputs, outputs
+                torch.cuda.empty_cache()
+                
+        except (RuntimeError, torch.cuda.OutOfMemoryError):
+            # Fallback to sequential generation
+            print("Batch generation failed, falling back to sequential...")
+            responses = []
+            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
             
-            response = tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
-            responses.append(response.strip())
+            for _ in range(num_responses):
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=PAPER_HYPERPARAMETERS["max_new_tokens"],
+                        temperature=PAPER_HYPERPARAMETERS["temperature"],
+                        do_sample=True,
+                        top_p=0.9,
+                        pad_token_id=tokenizer.pad_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
+                
+                response = tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+                responses.append(response.strip())
         
         return responses
     
@@ -219,6 +254,51 @@ class IterativeIPO:
             
         return yes_prob
     
+    def evaluate_responses_batch(self, model, tokenizer, instruction: str, responses: List[str], category: Optional[str] = None) -> List[float]:
+        """Batch evaluate multiple responses for better GPU utilization"""
+        if category is None:
+            category = self.detect_category(instruction)
+        
+        # Create batch of evaluation prompts
+        eval_prompts = []
+        for response in responses:
+            eval_prompt = CATEGORY_EVALUATION_PROMPTS[category].format(
+                instruction=instruction,
+                response=response
+            )
+            eval_prompts.append(eval_prompt)
+        
+        # Batch tokenization
+        inputs = tokenizer(eval_prompts, return_tensors="pt", truncation=True, max_length=1024, padding=True)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        
+        scores = []
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits = outputs.logits[:, -1]  # Get last token logits for all samples
+            
+            # Get token IDs for Yes/No
+            yes_tokens = tokenizer.encode("Yes", add_special_tokens=False)
+            no_tokens = tokenizer.encode("No", add_special_tokens=False)
+            
+            # Handle different tokenizer behaviors
+            yes_token_id = yes_tokens[0] if yes_tokens else tokenizer.encode("yes", add_special_tokens=False)[0]
+            no_token_id = no_tokens[0] if no_tokens else tokenizer.encode("no", add_special_tokens=False)[0]
+            
+            # Process each sample in the batch
+            for i in range(len(responses)):
+                yes_logit = logits[i, yes_token_id].item()
+                no_logit = logits[i, no_token_id].item()
+                
+                # Softmax to get probability
+                yes_prob = torch.nn.functional.softmax(
+                    torch.tensor([yes_logit, no_logit]), dim=0
+                )[0].item()
+                
+                scores.append(yes_prob)
+        
+        return scores
+    
     def generate_self_preferences(self, model, tokenizer, dataset, iteration: int):
         """Generate preference pairs with category awareness"""
         preferences = []
@@ -229,14 +309,11 @@ class IterativeIPO:
             category = self.detect_category(instruction)
             category_counts[category] += 1
             
-            # Generate multiple responses
-            responses = self.generate_responses(model, tokenizer, instruction, num_responses=4)
+            # Generate multiple responses - increase to 8 for better GPU utilization
+            responses = self.generate_responses(model, tokenizer, instruction, num_responses=8)
             
-            # Self-evaluate responses with category-specific prompt
-            scores = []
-            for response in responses:
-                score = self.evaluate_response(model, tokenizer, instruction, response, category)
-                scores.append(score)
+            # Self-evaluate responses with category-specific prompt (batch evaluation)
+            scores = self.evaluate_responses_batch(model, tokenizer, instruction, responses, category)
             
             # Create preference pair
             best_idx = np.argmax(scores)
@@ -274,6 +351,7 @@ class IterativeIPO:
         training_config = get_updated_training_config()
         training_args = DPOConfig(
             output_dir=checkpoint_path,
+            beta=PAPER_HYPERPARAMETERS["dpo_beta"],
             **training_config,
             report_to="wandb" if wandb.run else "none",
             run_name=f"ipo_iteration_{iteration}",
@@ -301,8 +379,7 @@ class IterativeIPO:
             args=training_args,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            tokenizer=tokenizer,
-            beta=PAPER_HYPERPARAMETERS["dpo_beta"],
+            processing_class=tokenizer,
             max_length=1024,
             max_target_length=256,
             max_prompt_length=512,
@@ -372,11 +449,37 @@ class IterativeIPO:
         
         # Load evaluation datasets
         eval_datasets = {}
+        # Define proper splits and configs for different datasets
+        dataset_configs = {
+            "truthful_qa": {"config": "generation", "split": "validation[:500]"},
+            "gsm8k": {"config": "main", "split": "test[:500]"}, 
+            "hellaswag": {"config": None, "split": "validation[:500]"},
+            "tatsu-lab/alpaca": {"config": None, "split": "train[:500]"}  # Fix: use train split
+        }
+        
         for dataset_name in self.config.eval_datasets:
             try:
-                eval_datasets[dataset_name] = load_dataset(dataset_name, split="test[:500]")
-            except:
-                print(f"Failed to load {dataset_name}, skipping...")
+                config_info = dataset_configs.get(dataset_name, {"config": None, "split": "test[:500]"})
+                
+                # Load dataset with proper config and trust_remote_code
+                if config_info["config"]:
+                    eval_datasets[dataset_name] = load_dataset(
+                        dataset_name, 
+                        config_info["config"], 
+                        split=config_info["split"],
+                        trust_remote_code=True
+                    )
+                else:
+                    eval_datasets[dataset_name] = load_dataset(
+                        dataset_name, 
+                        split=config_info["split"],
+                        trust_remote_code=True
+                    )
+                    
+                print(f"✓ Loaded {dataset_name} with {len(eval_datasets[dataset_name])} examples")
+            except Exception as e:
+                print(f"Failed to load {dataset_name}: {e}")
+                print(f"Skipping {dataset_name}...")
         
         # Load base training dataset
         base_dataset = load_dataset(self.config.base_dataset, split="train")

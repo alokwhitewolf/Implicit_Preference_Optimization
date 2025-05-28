@@ -15,6 +15,21 @@ if [[ -z "$CONDA_DEFAULT_ENV" ]]; then
     exit 1
 fi
 
+# Check Flash Attention setup
+echo "🔍 Checking Flash Attention setup..."
+python -c "
+try:
+    from transformers.utils import is_flash_attn_2_available
+    if is_flash_attn_2_available():
+        print('✅ Flash Attention 2 is available - training will be fast!')
+    else:
+        print('⚠️  Flash Attention not available - training will be slower')
+        print('   Run: ./scripts/install_flash_attention.sh to fix this')
+except ImportError:
+    print('⚠️  Flash Attention not installed - training will be slower')
+    print('   Run: ./scripts/install_flash_attention.sh to install')
+"
+
 # Export CUDA settings
 export CUDA_VISIBLE_DEVICES=0
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512

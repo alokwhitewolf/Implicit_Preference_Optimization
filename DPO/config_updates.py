@@ -26,9 +26,9 @@ PAPER_HYPERPARAMETERS = {
     "lora_r": 256,
     "lora_alpha": 128,
     "lora_dropout": 0.05,
-    "num_responses": 4,  # Generate 4 responses per instruction
+    "num_responses": 8,  # Generate 8 responses per instruction for better GPU utilization
     "temperature": 0.7,  # For response generation
-    "max_new_tokens": 256,
+    "max_new_tokens": 512,  # Increased for bigger workloads
 }
 
 # Evaluation prompts based on task category (from paper insights)
@@ -93,17 +93,22 @@ REWARDBENCH_SUBSETS = [
 # Training configuration updates
 def get_updated_training_config():
     return {
-        "per_device_train_batch_size": 1,  # Paper uses small batch sizes
-        "per_device_eval_batch_size": 1,
-        "gradient_accumulation_steps": 16,  # Effective batch size of 16
+        "per_device_train_batch_size": 8,  # Increased to use more GPU memory
+        "per_device_eval_batch_size": 16,  # Higher for eval since no gradients
+        "gradient_accumulation_steps": 2,  # Reduced to maintain effective batch size of 16
         "gradient_checkpointing": True,
         "bf16": True,  # Or fp16 depending on hardware
         "logging_steps": 10,
-        "eval_steps": 100,
-        "save_steps": 100,
+        "eval_steps": 200,  # Reduced frequency for speed
+        "save_steps": 200,  # Reduced frequency for speed
         "num_train_epochs": 1,  # Paper uses 1 epoch
         "warmup_ratio": 0.1,
         "remove_unused_columns": False,
+        "dataloader_num_workers": 8,  # More parallel data loading
+        "dataloader_pin_memory": True,  # Faster GPU transfer
+        "tf32": True,  # Faster matrix operations on A100/H100
+        "group_by_length": True,  # Reduce padding overhead
+        "dataloader_prefetch_factor": 4,  # Prefetch more batches
     }
 
 # Dataset configurations from paper
