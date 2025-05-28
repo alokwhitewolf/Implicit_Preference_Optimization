@@ -12,6 +12,7 @@ import os
 import json
 import torch
 import argparse
+import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -160,7 +161,7 @@ class IterativeIPO:
         else:
             return 'chat'
     
-    def generate_responses(self, model, tokenizer, instruction: str, num_responses: int = 8):
+    def generate_responses(self, model, tokenizer, instruction: str, num_responses: int = 4):
         """Generate multiple responses with memory-efficient batching"""
         # Format instruction with proper template
         if "mistral" in self.config.model_id.lower():
@@ -174,7 +175,7 @@ class IterativeIPO:
         
         # Try batch generation first, fallback to sequential if OOM
         try:
-            # Aggressive batch generation - we have 40GB GPU, use more!
+            # Batch generation - try all 4 responses at once
             batch_size = num_responses  # Try all 4 at once
             for i in range(0, num_responses, batch_size):
                 current_batch_size = min(batch_size, num_responses - i)
@@ -316,8 +317,8 @@ class IterativeIPO:
             category = self.detect_category(instruction)
             category_counts[category] += 1
             
-            # Generate multiple responses - increase to 8 for better GPU utilization
-            responses = self.generate_responses(model, tokenizer, instruction, num_responses=8)
+            # Generate multiple responses (paper uses 4)
+            responses = self.generate_responses(model, tokenizer, instruction, num_responses=4)
             
             # Self-evaluate responses with category-specific prompt (batch evaluation)
             scores = self.evaluate_responses_batch(model, tokenizer, instruction, responses, category)
@@ -839,6 +840,150 @@ class IterativeIPO:
                 "degradation_analysis": degradation_analysis,
                 "cross_dataset_analysis": cross_dataset_analysis
             }, f, indent=2)
+        
+        # Export to CSV for easy analysis
+        self.export_metrics_to_csv()
+    
+    def export_metrics_to_csv(self):
+        """Export iteration metrics to CSV files for easy analysis and plotting"""
+        if not self.iteration_metrics:
+            return
+        
+        # Main iteration metrics CSV
+        iteration_data = []
+        for metric in self.iteration_metrics:
+            row = {
+                'iteration': metric.iteration,
+                'eval_loss': metric.eval_loss,
+                'self_eval_accuracy': metric.self_eval_accuracy,
+                'preference_agreement': metric.preference_agreement,
+                'response_diversity': metric.response_diversity,
+                'model_id': self.config.model_id,
+                'experiment_type': getattr(self.config, 'experiment_type', 'unknown'),
+                'max_iterations': self.config.max_iterations,
+                'timestamp': getattr(metric, 'timestamp', datetime.now().isoformat())
+            }
+            
+            # Add category scores as separate columns
+            for category, score in metric.category_scores.items():
+                row[f'category_{category}'] = score
+            
+            # Add cross-dataset scores
+            for dataset, score in metric.cross_dataset_scores.items():
+                dataset_clean = dataset.replace('/', '_').replace('-', '_')
+                row[f'dataset_{dataset_clean}'] = score
+            
+            # Add RewardBench scores if available
+            if hasattr(metric, 'rewardbench_scores'):
+                for subset, score in metric.rewardbench_scores.items():
+                    subset_clean = subset.replace('-', '_').replace('/', '_')
+                    row[f'rewardbench_{subset_clean}'] = score
+            
+            iteration_data.append(row)
+        
+        # Save main metrics CSV
+        df_metrics = pd.DataFrame(iteration_data)
+        metrics_csv = os.path.join(self.config.results_dir, "iteration_metrics.csv")
+        df_metrics.to_csv(metrics_csv, index=False)
+        
+        # Category performance CSV (for detailed analysis)
+        category_data = []
+        for metric in self.iteration_metrics:
+            for category, score in metric.category_scores.items():
+                category_data.append({
+                    'iteration': metric.iteration,
+                    'category': category,
+                    'score': score,
+                    'model_id': self.config.model_id
+                })
+        
+        if category_data:
+            df_categories = pd.DataFrame(category_data)
+            categories_csv = os.path.join(self.config.results_dir, "category_performance.csv")
+            df_categories.to_csv(categories_csv, index=False)
+        
+        # Cross-dataset performance CSV
+        dataset_data = []
+        for metric in self.iteration_metrics:
+            for dataset, score in metric.cross_dataset_scores.items():
+                dataset_data.append({
+                    'iteration': metric.iteration,
+                    'dataset': dataset,
+                    'score': score,
+                    'model_id': self.config.model_id
+                })
+        
+        if dataset_data:
+            df_datasets = pd.DataFrame(dataset_data)
+            datasets_csv = os.path.join(self.config.results_dir, "cross_dataset_performance.csv")
+            df_datasets.to_csv(datasets_csv, index=False)
+        
+        # Summary statistics CSV
+        if len(self.iteration_metrics) > 1:
+            self_eval_scores = [m.self_eval_accuracy for m in self.iteration_metrics]
+            peak_performance = max(self_eval_scores)
+            peak_iteration = self_eval_scores.index(peak_performance) + 1
+            final_performance = self_eval_scores[-1]
+            
+            summary_data = [{
+                'model_id': self.config.model_id,
+                'total_iterations': len(self.iteration_metrics),
+                'peak_performance': peak_performance,
+                'peak_iteration': peak_iteration,
+                'final_performance': final_performance,
+                'total_degradation': (peak_performance - final_performance) / peak_performance if peak_performance > 0 else 0,
+                'iterations_after_peak': len(self.iteration_metrics) - peak_iteration,
+                'experiment_start': self.iteration_metrics[0].timestamp if hasattr(self.iteration_metrics[0], 'timestamp') else 'unknown',
+                'experiment_end': self.iteration_metrics[-1].timestamp if hasattr(self.iteration_metrics[-1], 'timestamp') else 'unknown'
+            }]
+            
+            df_summary = pd.DataFrame(summary_data)
+            summary_csv = os.path.join(self.config.results_dir, "experiment_summary.csv")
+            df_summary.to_csv(summary_csv, index=False)
+        
+        print(f"📊 CSV exports saved:")
+        print(f"   - Main metrics: {metrics_csv}")
+        print(f"   - Category performance: {os.path.join(self.config.results_dir, 'category_performance.csv')}")
+        print(f"   - Cross-dataset performance: {os.path.join(self.config.results_dir, 'cross_dataset_performance.csv')}")
+        print(f"   - Experiment summary: {os.path.join(self.config.results_dir, 'experiment_summary.csv')}")
+        
+        # Also save to a global results directory for comparison across experiments
+        self.save_to_global_csv(df_metrics, df_summary if len(self.iteration_metrics) > 1 else None)
+    
+    def save_to_global_csv(self, df_metrics, df_summary=None):
+        """Save experiment data to global CSV files for cross-experiment comparison"""
+        global_results_dir = "./results/all_experiments"
+        Path(global_results_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Global metrics file (append mode)
+        global_metrics_file = os.path.join(global_results_dir, "all_experiments_metrics.csv")
+        df_metrics['experiment_id'] = f"{self.config.model_id.split('/')[-1]}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+        
+        # Add experiment metadata
+        for col in ['experiment_id', 'model_id', 'experiment_type', 'max_iterations']:
+            if col not in df_metrics.columns:
+                if col == 'experiment_id':
+                    df_metrics[col] = f"{self.config.model_id.split('/')[-1]}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+                elif col == 'experiment_type':
+                    df_metrics[col] = 'limit_testing'
+        
+        # Save or append to global file
+        if os.path.exists(global_metrics_file):
+            df_metrics.to_csv(global_metrics_file, mode='a', header=False, index=False)
+        else:
+            df_metrics.to_csv(global_metrics_file, index=False)
+        
+        # Global summary file
+        if df_summary is not None:
+            global_summary_file = os.path.join(global_results_dir, "all_experiments_summary.csv")
+            df_summary['experiment_id'] = df_metrics['experiment_id'].iloc[0]
+            
+            if os.path.exists(global_summary_file):
+                df_summary.to_csv(global_summary_file, mode='a', header=False, index=False)
+            else:
+                df_summary.to_csv(global_summary_file, index=False)
+        
+        print(f"📈 Global comparison files updated: {global_results_dir}")
     
     def generate_plots(self):
         """Generate comprehensive visualizations including category-specific analysis"""
