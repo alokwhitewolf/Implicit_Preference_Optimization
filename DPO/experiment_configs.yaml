@@ -1,128 +1,138 @@
-# Experiment configurations for iterative IPO research
-#
-# NOTE: This file documents the full experimental design.
-# Currently implemented experiments (in run_experiments.sh):
-#   - Experiment 1: Iteration limits
-#   - Experiment 2: Cross-dataset transfer  
-#   - Experiment 3: Sample efficiency
-# 
-# Experiments 4-6 are planned for future work.
+#!/usr/bin/env python3
+"""
+Configuration updates to align with IPO paper methodology
+"""
 
-# Base configuration
-base_config:
-  model_id: "meta-llama/Llama-3.2-1B-Instruct"
-  wandb_entity: null  # Set your wandb username/team
-  early_stopping_patience: 3
-  performance_threshold: 0.01
+# Model configurations based on paper
+PAPER_MODELS = {
+    "small": [
+        "meta-llama/Llama-3.2-1B-Instruct",
+        "Qwen/Qwen2.5-1.5B-Instruct",  # Paper mentions Qwen as top performer
+    ],
+    "medium": [
+        "mistralai/Mistral-7B-Instruct-v0.1",
+        "meta-llama/Llama-3.1-8B-Instruct",
+        "Qwen/Qwen2.5-7B-Instruct",
+    ],
+    "large": [
+        "meta-llama/Llama-3.1-70B-Instruct",  # If you have resources
+    ]
+}
 
-# Experiment 1: Iteration limit testing
-iteration_limits:
-  description: "Test how many rounds of self-improvement before plateau/degradation"
-  experiments:
-    - name: "small_model_long_run"
-      model_id: "meta-llama/Llama-3.2-1B-Instruct"
-      max_iterations: 20
-      samples_per_iteration: 1000
-      base_dataset: "databricks/databricks-dolly-15k"
-      eval_datasets: ["truthful_qa", "gsm8k", "hellaswag"]
-      
-    - name: "small_model_intensive"
-      model_id: "meta-llama/Llama-3.2-1B-Instruct"
-      max_iterations: 10
-      samples_per_iteration: 5000
-      base_dataset: "databricks/databricks-dolly-15k"
-      eval_datasets: ["truthful_qa", "gsm8k"]
+# Updated hyperparameters from paper
+PAPER_HYPERPARAMETERS = {
+    "dpo_beta": 0.1,  # From original implementation
+    "learning_rate": 3.75e-5, # reduced to account for higher batch size
+    "lora_r": 256,
+    "lora_alpha": 128,
+    "lora_dropout": 0.05,
+    "num_responses": 4,  # Generate 4 responses per instruction (paper setting)
+    "instruction_batch_size": 64,  # Number of instructions to batch together for GPU efficiency
+    "eval_batch_size": 64,  # Number of evaluations to batch together for cross-dataset evaluation
+    "temperature": 0.7,  # For response generation
+    "max_new_tokens": 256,  # Aligned with ours.py
+}
 
-# Experiment 2: Cross-dataset transfer
-cross_dataset_transfer:
-  description: "Test if training on one dataset impacts others"
-  base_model: "meta-llama/Llama-3.2-1B-Instruct"
-  max_iterations: 5
-  samples_per_iteration: 1000
-  training_datasets:
-    - "dolly"      # General instruction following
-    - "alpaca"     # General instruction following
-    - "code_alpaca" # Code generation
-    - "gsm8k"      # Math reasoning
-    - "truthful_qa" # Truthfulness
-  
-  evaluation_matrix:
-    # Each training dataset is evaluated on all datasets
-    full_matrix: true
+# Evaluation prompts based on task category (from paper insights)
+CATEGORY_EVALUATION_PROMPTS = {
+    "code": """Below is a coding-related question along with a response containing code. 
+Your task is to verify whether the provided code is correct, functional, 
+and aligned with the requirements of the question. Answer with just Yes/No
 
-# Experiment 3: Sample efficiency
-sample_efficiency:
-  description: "Test impact of samples per iteration"
-  model_id: "meta-llama/Llama-3.2-1B-Instruct"
-  base_dataset: "databricks/databricks-dolly-15k"
-  eval_datasets: ["truthful_qa"]
-  max_iterations: 8
-  sample_sizes: [100, 250, 500, 1000, 2000, 5000]
+User: {instruction}
+Response: {response}
 
-# Experiment 4: Response diversity analysis
-diversity_analysis:
-  description: "Track how response diversity changes"
-  model_id: "meta-llama/Llama-3.2-1B-Instruct"
-  base_dataset: "databricks/databricks-dolly-15k"
-  max_iterations: 10
-  samples_per_iteration: 500
-  metrics_to_track:
-    - "response_diversity"
-    - "preference_agreement"
-    - "semantic_similarity"
-    - "length_variance"
+Is this code correct and functional? Answer:""",
+    
+    "math": """Below is a mathematical question along with a solution. 
+Your task is to verify whether the solution is mathematically correct 
+and properly addresses the question. Answer with just Yes/No
 
-# Experiment 5: Catastrophic forgetting
-forgetting_analysis:
-  description: "Detailed analysis of catastrophic forgetting patterns"
-  model_id: "meta-llama/Llama-3.2-1B-Instruct"
-  sequence_of_datasets:
-    - dataset: "dolly"
-      iterations: 3
-    - dataset: "gsm8k"
-      iterations: 3
-    - dataset: "code_alpaca"
-      iterations: 3
-  eval_after_each_phase: true
-  eval_datasets: ["dolly", "gsm8k", "code_alpaca", "truthful_qa"]
+User: {instruction}
+Response: {response}
 
-# Experiment 6: Different prompting strategies
-prompting_strategies:
-  description: "Test different self-evaluation prompts"
-  model_id: "meta-llama/Llama-3.2-1B-Instruct"
-  base_dataset: "databricks/databricks-dolly-15k"
-  max_iterations: 5
-  prompt_variants:
-    - name: "binary"
-      prompt: "Is this response helpful? Yes/No"
-    - name: "detailed"
-      prompt: "Evaluate if this response is accurate, helpful, and appropriate. Answer Yes/No"
-    - name: "comparative"
-      prompt: "Is this a high-quality response? Yes/No"
-    - name: "task_specific"
-      prompts:
-        code: "Is this code correct and functional? Yes/No"
-        math: "Is this mathematical solution correct? Yes/No"
-        general: "Is this response helpful? Yes/No"
+Is this mathematical solution correct? Answer:""",
+    
+    "chat": """Below is a user question and a response. 
+Your task is to evaluate if the response is helpful, accurate, and appropriate.
+Answer with just Yes/No.
 
-# Analysis configurations
-analysis_config:
-  metrics:
-    - "self_eval_accuracy"
-    - "cross_dataset_scores"
-    - "preference_agreement"
-    - "response_diversity"
-    - "training_loss"
-    - "evaluation_loss"
-  
-  visualization:
-    - "performance_trajectory"
-    - "transfer_heatmap"
-    - "degradation_curves"
-    - "diversity_scatter"
-    - "forgetting_timeline"
-  
-  statistical_tests:
-    - "degradation_significance"
-    - "transfer_correlation"
-    - "plateau_detection"
+User: {instruction}
+Response: {response}
+
+Is this response helpful and appropriate? Answer:""",
+    
+    "safety": """Below is a user question and a response. 
+Your task is to evaluate if the response is safe, ethical, and appropriate.
+Answer with just Yes/No.
+
+User: {instruction}
+Response: {response}
+
+Is this response safe and appropriate? Answer:""",
+    
+    "reasoning": """Below is a reasoning task and a response. 
+Your task is to evaluate if the response demonstrates correct logical reasoning.
+Answer with just Yes/No.
+
+User: {instruction}
+Response: {response}
+
+Is the reasoning in this response correct? Answer:"""
+}
+
+# RewardBench subsets from paper
+REWARDBENCH_SUBSETS = [
+    'alpacaeval-easy', 'alpacaeval-hard', 'alpacaeval-length',
+    'chat_hard', 'chat_med', 'chat_easy',
+    'refusals-dangerous', 'refusals-offensive', 
+    'llmbar-adver-GPTInst', 'llmbar-adver-GPTOut', 'llmbar-adver-manual',
+    'llmbar-natural', 'llmbar-adver-neighbor',
+    'math-prm', 'hep-cpp', 'hep-go', 'hep-java', 'hep-js', 'hep-python', 'hep-rust',
+    'xstest-should-refuse', 'xstest-should-respond', 'donotanswer'
+]
+
+# Training configuration updates
+def get_updated_training_config():
+    return {
+        "per_device_train_batch_size": 4,  # Reduced to avoid OOM during DPO training
+        "per_device_eval_batch_size": 4,  # Further reduced - DPO eval is memory intensive
+        "gradient_accumulation_steps": 1,
+        "gradient_checkpointing": True,
+        "learning_rate": PAPER_HYPERPARAMETERS["learning_rate"],
+        "bf16": True,  # Or fp16 depending on hardware
+        "logging_steps": 10,
+        "eval_steps": 200,  # Reduced frequency for speed
+        "save_steps": 200,  # Reduced frequency for speed
+        "num_train_epochs": 1,  # Paper uses 1 epoch
+        "warmup_ratio": 0.1,
+        "remove_unused_columns": False,
+        "dataloader_num_workers": 8,  # More parallel data loading
+        "dataloader_pin_memory": True,  # Faster GPU transfer
+        "tf32": True,  # Faster matrix operations on A100/H100
+        "group_by_length": False,  # Disabled - requires input_ids key in dataset
+        "dataloader_prefetch_factor": 4,  # Prefetch more batches
+        
+        # Storage optimization - only save best and current models
+        "save_all_checkpoints": False,  # Enable selective model saving for storage efficiency
+    }
+
+# Dataset configurations from paper
+DATASET_CONFIGS = {
+    "ultrafeedback": {
+        "name": "argilla/ultrafeedback-binarized-preferences-cleaned",
+        "train_size": 11000,  # Paper uses this split
+        "eval_size": 2750,
+    },
+    "balanced_ultrafeedback": {
+        "name": "Ayush-Singh/UltraFeedback-1k-Each",
+        "splits": ["split_1", "split_2", "split_3"],
+        "description": "Balanced dataset with 1k examples per category (code, math, chat, safety, reasoning)"
+    },
+    # Default dataset - switch from chat-heavy dolly to balanced ultrafeedback
+    "default": {
+        "name": "Ayush-Singh/UltraFeedback-1k-Each", 
+        "split": "split_1",
+        "description": "Balanced 1k examples across all categories - fixes dataset skew issue"
+    }
+}

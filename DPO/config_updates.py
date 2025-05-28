@@ -95,8 +95,8 @@ REWARDBENCH_SUBSETS = [
 # Training configuration updates
 def get_updated_training_config():
     return {
-        "per_device_train_batch_size": 8,  # Increased to use more GPU memory
-        "per_device_eval_batch_size": 64,  # Higher for eval since no gradients
+        "per_device_train_batch_size": 4,  # Reduced to avoid OOM during DPO training
+        "per_device_eval_batch_size": 4,  # Further reduced - DPO eval is memory intensive
         "gradient_accumulation_steps": 1,
         "gradient_checkpointing": True,
         "learning_rate": PAPER_HYPERPARAMETERS["learning_rate"],
@@ -112,6 +112,9 @@ def get_updated_training_config():
         "tf32": True,  # Faster matrix operations on A100/H100
         "group_by_length": False,  # Disabled - requires input_ids key in dataset
         "dataloader_prefetch_factor": 4,  # Prefetch more batches
+        
+        # Storage optimization - only save best and current models
+        "save_all_checkpoints": False,  # Enable selective model saving for storage efficiency
     }
 
 # Dataset configurations from paper
@@ -121,8 +124,15 @@ DATASET_CONFIGS = {
         "train_size": 11000,  # Paper uses this split
         "eval_size": 2750,
     },
-    "custom_ultrafeedback": {
+    "balanced_ultrafeedback": {
         "name": "Ayush-Singh/UltraFeedback-1k-Each",
-        "splits": ["split_1", "split_2", "split_3"]
+        "splits": ["split_1", "split_2", "split_3"],
+        "description": "Balanced dataset with 1k examples per category (code, math, chat, safety, reasoning)"
+    },
+    # Default dataset - switch from chat-heavy dolly to balanced ultrafeedback
+    "default": {
+        "name": "Ayush-Singh/UltraFeedback-1k-Each", 
+        "split": "split_1",
+        "description": "Balanced 1k examples across all categories - fixes dataset skew issue"
     }
 }

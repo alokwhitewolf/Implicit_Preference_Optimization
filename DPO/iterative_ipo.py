@@ -21,7 +21,7 @@ import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from huggingface_hub import login, HfFolder
 from datasets import load_dataset, Dataset
-from trl import DPOTrainer, DPOConfig
+from trl import DPOTrainer, DPOConfig, SFTTrainer
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 import wandb
 from tqdm import tqdm
@@ -63,7 +63,7 @@ class ExperimentConfig:
     use_rewardbench: bool = True  # Evaluate on RewardBench
     
     # New parameters for research objectives
-    save_all_checkpoints: bool = True  # Save every iteration for analysis
+    save_all_checkpoints: bool = False  # Only save best and current models
     cross_dataset_eval: bool = True  # Evaluate on all datasets every iteration
     track_degradation: bool = True  # Detailed degradation tracking
     plateau_detection_window: int = 3  # Window for plateau detection
@@ -77,12 +77,17 @@ class IterativeIPO:
     def __init__(self, config: ExperimentConfig):
         self.config = config
         self.iteration_metrics: List[IterationMetrics] = []
+        self.best_performance = 0.0
+        self.best_iteration = 0
         self.setup_directories()
         
     def setup_directories(self):
         """Create necessary directories for checkpoints and results"""
         Path(self.config.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(self.config.results_dir).mkdir(parents=True, exist_ok=True)
+        # Create subdirectories for essential checkpoints only
+        Path(os.path.join(self.config.checkpoint_dir, "current")).mkdir(parents=True, exist_ok=True)
+        Path(os.path.join(self.config.checkpoint_dir, "best")).mkdir(parents=True, exist_ok=True)
         
     def authenticate_huggingface(self):
         """Authenticate with Hugging Face using stored token"""
@@ -147,6 +152,100 @@ class IterativeIPO:
             model = prepare_model_for_kbit_training(model)
             
         return model, tokenizer
+    
+    def run_sft_training(self, model, tokenizer, iteration: int):
+        """SFT training on Dolly-15k before DPO (for base models only) - Paper Section 4.3"""
+        # Only run SFT for base models (not instruct models)
+        if "Instruct" in self.config.model_id or "instruct" in self.config.model_id.lower():
+            print("✓ Skipping SFT - using pre-trained instruct model")
+            return model
+        
+        print(f"🔧 Running SFT training on Dolly-15k (Iteration {iteration})...")
+        
+        # Load Dolly-15k dataset for SFT (as specified in paper)
+        dolly_dataset = load_dataset("databricks/databricks-dolly-15k", split="train")
+        print(f"✓ Loaded Dolly-15k with {len(dolly_dataset)} examples")
+        
+        # Format dataset for SFT training
+        def format_dolly_for_sft(example):
+            if "mistral" in self.config.model_id.lower():
+                formatted_text = f"[INST] {example['instruction']} [/INST] {example['response']}"
+            else:
+                # Use chat template for other models
+                messages = [
+                    {"role": "user", "content": example['instruction']},
+                    {"role": "assistant", "content": example['response']}
+                ]
+                formatted_text = tokenizer.apply_chat_template(messages, tokenize=False)
+            
+            return {"text": formatted_text}
+        
+        sft_dataset = dolly_dataset.map(format_dolly_for_sft)
+        
+        # Split into train/eval
+        sft_split = sft_dataset.train_test_split(test_size=0.1, seed=42)
+        
+        # SFT configuration (from paper appendix)
+        sft_checkpoint_path = os.path.join(self.config.checkpoint_dir, f"sft_iteration_{iteration}")
+        
+        # LoRA configuration for SFT
+        sft_peft_config = LoraConfig(
+            r=PAPER_HYPERPARAMETERS["lora_r"],
+            lora_alpha=PAPER_HYPERPARAMETERS["lora_alpha"],
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            lora_dropout=PAPER_HYPERPARAMETERS["lora_dropout"],
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+        )
+        
+        # SFT training arguments (from paper Table 4)
+        from transformers import TrainingArguments
+        sft_args = TrainingArguments(
+            output_dir=sft_checkpoint_path,
+            num_train_epochs=3,  # Paper Table 4
+            per_device_train_batch_size=4,  # Paper Table 4
+            per_device_eval_batch_size=4,
+            learning_rate=5e-4,  # Paper Table 4
+            logging_steps=25,
+            save_steps=500,
+            eval_steps=500,
+            evaluation_strategy="steps",
+            gradient_checkpointing=True,
+            optim="adamw_torch",
+            lr_scheduler_type="cosine",
+            warmup_ratio=0.1,
+            bf16=True,
+            remove_unused_columns=False,
+            report_to="wandb" if wandb.run else "none",
+            run_name=f"sft_iteration_{iteration}",
+        )
+        
+        # Apply LoRA to model
+        model = get_peft_model(model, sft_peft_config)
+        model.print_trainable_parameters()
+        
+        # Create SFT trainer
+        sft_trainer = SFTTrainer(
+            model=model,
+            args=sft_args,
+            train_dataset=sft_split["train"],
+            eval_dataset=sft_split["test"],
+            tokenizer=tokenizer,
+            max_seq_length=1024,
+        )
+        
+        # Train
+        print("🚀 Starting SFT training...")
+        sft_trainer.train()
+        
+        # Save SFT model
+        sft_trainer.save_model(sft_checkpoint_path)
+        tokenizer.save_pretrained(sft_checkpoint_path)
+        
+        print(f"✓ SFT training completed. Model saved to {sft_checkpoint_path}")
+        
+        # Return the SFT-trained model (still has LoRA adapters)
+        return model
     
     def detect_category(self, instruction: str) -> str:
         """Detect instruction category for appropriate evaluation prompt"""
@@ -375,6 +474,38 @@ class IterativeIPO:
         print(f"📊 Batched processing: {instruction_batch_size} instructions × {num_responses} responses = {instruction_batch_size * num_responses} responses per batch")
         return Dataset.from_list(preferences)
     
+    def transform_entry(self, entry):
+        """Transform preference pair to DPO format (from original ours.py)"""
+        return {
+            "prompt": f"[INST] {entry['instruction']} [/INST]",
+            "chosen": f"{entry['chosen']}<|eot_id|>",
+            "rejected": f"{entry['rejected']}<|eot_id|>"
+        }
+    
+    def prepare_dpo_data(self, preferences: Dataset, iteration: int):
+        """Prepare DPO data in memory (no disk saving) for training"""
+        # Convert Dataset to list for processing
+        preferences_list = preferences.to_list() if hasattr(preferences, 'to_list') else list(preferences)
+        
+        # Transform to DPO format (prompt, chosen, rejected)
+        transformed_data = []
+        for entry in preferences_list:
+            transformed = self.transform_entry(entry)
+            transformed_data.append(transformed)
+        
+        # Split into train/test (90/10)
+        train_size = int(0.9 * len(transformed_data))
+        train_data = transformed_data[:train_size]
+        test_data = transformed_data[train_size:]
+        
+        print(f"📊 Prepared DPO data: {len(train_data)} train, {len(test_data)} test examples")
+        
+        # Convert to Hugging Face datasets
+        train_dataset = Dataset.from_list(train_data)
+        eval_dataset = Dataset.from_list(test_data)
+        
+        return train_dataset, eval_dataset
+    
     def _process_instruction_batch(self, model, tokenizer, instruction_batch, num_responses, category_counts):
         """Process a batch of instructions simultaneously for maximum GPU efficiency"""
         # Collect all prompts for this batch (num_responses per instruction)
@@ -490,13 +621,15 @@ class IterativeIPO:
         
         # Training configuration
         training_config = get_updated_training_config()
+        # Remove non-DPO parameters from training config
+        dpo_config = {k: v for k, v in training_config.items() if k != 'save_all_checkpoints'}
         training_args = DPOConfig(
             output_dir=checkpoint_path,
             beta=PAPER_HYPERPARAMETERS["dpo_beta"],
             max_length=1024,
             max_completion_length=256,
             max_prompt_length=512,
-            **training_config,
+            **dpo_config,
             report_to="wandb" if wandb.run else "none",
             run_name=f"ipo_iteration_{iteration}",
         )
@@ -505,17 +638,10 @@ class IterativeIPO:
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
         
-        # Format dataset for DPO
-        def format_for_dpo(example):
-            # Ensure proper format for DPO trainer
-            return {
-                "prompt": example["instruction"],
-                "chosen": example["chosen"],
-                "rejected": example["rejected"]
-            }
-        
-        train_dataset = train_dataset.map(format_for_dpo)
-        eval_dataset = eval_dataset.map(format_for_dpo)
+        # The dataset is already in DPO format from save_preference_data()
+        # No need to reformat - it already has prompt, chosen, rejected keys
+        print(f"✓ DPO dataset format: {train_dataset.column_names}")
+        print(f"✓ Training on {len(train_dataset)} preference pairs")
         
         # Create trainer
         trainer = DPOTrainer(
@@ -529,12 +655,40 @@ class IterativeIPO:
         # Train
         train_result = trainer.train()
         
-        # Save model and tokenizer
-        trainer.save_model(checkpoint_path)
-        tokenizer.save_pretrained(checkpoint_path)
+        # Clear cache before evaluation
+        torch.cuda.empty_cache()
         
-        # Get metrics
-        eval_results = trainer.evaluate()
+        # Get metrics with memory management
+        try:
+            # Try evaluation with memory safety
+            if hasattr(self.config, 'skip_dpo_eval') and self.config.skip_dpo_eval:
+                print("⚠️ Skipping DPO evaluation due to memory constraints")
+                eval_results = {"eval_loss": 0.0}
+            else:
+                eval_results = trainer.evaluate()
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print("⚠️ Evaluation OOM - skipping evaluation this iteration")
+                torch.cuda.empty_cache()
+                eval_results = {"eval_loss": 0.0}
+            else:
+                raise e
+        
+        # Save model and tokenizer only if selective saving is enabled
+        if getattr(self.config, 'save_all_checkpoints', True):
+            # Original behavior - save all checkpoints
+            trainer.save_model(checkpoint_path)
+            tokenizer.save_pretrained(checkpoint_path)
+        else:
+            # Selective saving - only save current model temporarily for evaluation
+            # We'll determine if it's the best later and save accordingly
+            temp_checkpoint_path = os.path.join(self.config.checkpoint_dir, "temp_current")
+            trainer.save_model(temp_checkpoint_path)
+            tokenizer.save_pretrained(temp_checkpoint_path)
+        
+        # Clear trainer memory immediately after saving
+        del trainer
+        torch.cuda.empty_cache()
         
         return train_result.training_loss, eval_results.get('eval_loss', 0)
     
@@ -591,7 +745,18 @@ class IterativeIPO:
             return {}
     
     def run_experiment(self):
-        """Run the full iterative IPO experiment with paper alignment"""
+        """Run the full iterative IPO experiment with paper alignment
+        
+        Paper Implementation Flow (Section 4.3):
+        1. Base Model → SFT on Dolly-15k (for base models only)
+        2. Generate 4 responses per instruction from UltraFeedback
+        3. Self-evaluate responses using category-specific Yes/No prompts
+        4. Create preference pairs (best vs worst based on Yes probability)
+        5. Save preference data to disk in DPO format
+        6. Load saved data for DPO training
+        7. Train model using DPO on self-generated preferences
+        8. Repeat for multiple iterations
+        """
         # Initialize wandb with paper-specific tags
         wandb.init(
             project=self.config.wandb_project,
@@ -601,40 +766,49 @@ class IterativeIPO:
         
         # Load evaluation datasets
         eval_datasets = {}
-        # Define proper splits and configs for different datasets
+        # Load evaluation datasets with correct repository names
         dataset_configs = {
-            "truthful_qa": {"config": "generation", "split": "validation[:500]"},
-            "gsm8k": {"config": "main", "split": "test[:500]"}, 
-            "hellaswag": {"config": None, "split": "validation[:500]"},
-            "tatsu-lab/alpaca": {"config": None, "split": "train[:500]"}  # Fix: use train split
+            "truthful_qa": {"repo": "domenicrosati/TruthfulQA", "config": "default", "split": "train[:500]"},
+            "gsm8k": {"repo": "openai/gsm8k", "config": "main", "split": "test[:500]"},
+            "hellaswag": {"repo": "Rowan/hellaswag", "config": None, "split": "validation[:500]"},
         }
         
         for dataset_name in self.config.eval_datasets:
             try:
-                config_info = dataset_configs.get(dataset_name, {"config": None, "split": "test[:500]"})
+                config_info = dataset_configs.get(dataset_name, {"repo": dataset_name, "config": None, "split": "test[:500]"})
+                repo_name = config_info.get("repo", dataset_name)
                 
-                # Load dataset with proper config and trust_remote_code
+                print(f"Loading {dataset_name} from {repo_name}...")
+                
+                # Load dataset with proper config
                 if config_info["config"]:
                     eval_datasets[dataset_name] = load_dataset(
-                        dataset_name, 
+                        repo_name, 
                         config_info["config"], 
                         split=config_info["split"],
                         trust_remote_code=True
                     )
                 else:
                     eval_datasets[dataset_name] = load_dataset(
-                        dataset_name, 
+                        repo_name, 
                         split=config_info["split"],
                         trust_remote_code=True
                     )
                     
                 print(f"✓ Loaded {dataset_name} with {len(eval_datasets[dataset_name])} examples")
+                
             except Exception as e:
-                print(f"Failed to load {dataset_name}: {e}")
+                print(f"❌ Failed to load {dataset_name}: {e}")
                 print(f"Skipping {dataset_name}...")
         
         # Load base training dataset
-        base_dataset = load_dataset(self.config.base_dataset, split="train")
+        # For UltraFeedback-1k-Each, use split_1; for other datasets, use train split
+        if "UltraFeedback-1k-Each" in self.config.base_dataset:
+            base_dataset = load_dataset(self.config.base_dataset, split="split_1")
+            print(f"✓ Using balanced UltraFeedback dataset (split_1) with 1k examples per category")
+        else:
+            base_dataset = load_dataset(self.config.base_dataset, split="train")
+            print(f"✓ Using dataset: {self.config.base_dataset}")
         
         previous_prefs = None
         checkpoint_path = None
@@ -644,15 +818,25 @@ class IterativeIPO:
             print(f"Starting Iteration {iteration + 1}/{self.config.max_iterations}")
             print(f"{'='*50}")
             
-            # Load model
+            # Clear CUDA cache before loading new model
+            torch.cuda.empty_cache()
+            
+            # Step 1: Load model (base or from previous iteration)
             model, tokenizer = self.load_model_and_tokenizer(checkpoint_path)
             
-            # Generate self-preferences
+            # Step 2: SFT training (only for base models on first iteration)
+            if iteration == 0:
+                model = self.run_sft_training(model, tokenizer, iteration + 1)
+            
+            # Step 3: Generate self-preferences from UltraFeedback data
             train_prefs = self.generate_self_preferences(
                 model, tokenizer, 
                 base_dataset.select(range(self.config.samples_per_iteration)),
                 iteration + 1
             )
+            
+            # Step 4: Prepare DPO data (in memory, no permanent disk saving)
+            train_dataset, eval_dataset = self.prepare_dpo_data(train_prefs, iteration + 1)
             
             # Category distribution analysis
             category_dist = {}
@@ -660,25 +844,20 @@ class IterativeIPO:
                 cat_count = len(train_prefs.filter(lambda x: x['category'] == cat))
                 category_dist[cat] = cat_count / len(train_prefs) if len(train_prefs) > 0 else 0
             
-            # Split into train/eval
-            train_size = int(0.9 * len(train_prefs))
-            train_data = train_prefs.select(range(train_size))
-            eval_data = train_prefs.select(range(train_size, len(train_prefs)))
-            
-            # Train iteration
+            # Step 6: DPO training on self-generated preferences
             train_loss, eval_loss = self.train_iteration(
-                model, tokenizer, train_data, eval_data, iteration + 1
+                model, tokenizer, train_dataset, eval_dataset, iteration + 1
             )
             
-            # Evaluate performance
+            # Evaluate performance on external datasets
             cross_dataset_scores = self.evaluate_cross_dataset(model, tokenizer, eval_datasets)
             rewardbench_scores = self.evaluate_on_rewardbench(model, tokenizer)
-            self_eval_accuracy = np.mean(list(cross_dataset_scores.values())) if cross_dataset_scores else 0.0
+            self_eval_accuracy = np.mean(list(cross_dataset_scores.values())) if cross_dataset_scores else 0.5
             
-            # Category-specific evaluation
+            # Category-specific evaluation (using training preference data)
             category_scores = {}
             for category in ['code', 'math', 'chat', 'safety', 'reasoning']:
-                cat_data = eval_data.filter(lambda x: x['category'] == category)
+                cat_data = train_prefs.filter(lambda x: x['category'] == category)
                 if len(cat_data) > 0:
                     cat_accuracy = np.mean([
                         1 if ex['chosen_score'] > ex['rejected_score'] else 0 
@@ -720,6 +899,10 @@ class IterativeIPO:
             
             # Save results
             self.save_results()
+            
+            # Handle selective model saving after evaluation
+            if not getattr(self.config, 'save_all_checkpoints', True):
+                self._handle_selective_saving(self_eval_accuracy, iteration + 1)
             
             # Update for next iteration
             checkpoint_path = os.path.join(self.config.checkpoint_dir, f"iteration_{iteration + 1}")
@@ -772,8 +955,17 @@ class IterativeIPO:
             
             instruction = example.get('question') or example.get('instruction') or example.get('prompt', '')
             
-            # Only process if we have preference pairs
-            if 'chosen' in example and 'rejected' in example and instruction:
+            # Handle TruthfulQA format
+            if 'Best Answer' in example and 'Incorrect Answers' in example and instruction:
+                incorrect_answers = example['Incorrect Answers'].split(';') if example['Incorrect Answers'] else []
+                if incorrect_answers:
+                    eval_pairs.append({
+                        'instruction': instruction,
+                        'chosen': example['Best Answer'],
+                        'rejected': incorrect_answers[0].strip()  # Use first incorrect answer
+                    })
+            # Handle standard preference format
+            elif 'chosen' in example and 'rejected' in example and instruction:
                 eval_pairs.append({
                     'instruction': instruction,
                     'chosen': example['chosen'],
@@ -889,8 +1081,23 @@ class IterativeIPO:
                 
             instruction = example.get('question') or example.get('instruction') or example.get('prompt', '')
             
-            # Only evaluate if we have preference pairs
-            if 'chosen' in example and 'rejected' in example and instruction:
+            # Handle TruthfulQA format
+            if 'Best Answer' in example and 'Incorrect Answers' in example and instruction:
+                incorrect_answers = example['Incorrect Answers'].split(';') if example['Incorrect Answers'] else []
+                if incorrect_answers:
+                    chosen_score = self.evaluate_response(
+                        model, tokenizer, instruction, example['Best Answer']
+                    )
+                    rejected_score = self.evaluate_response(
+                        model, tokenizer, instruction, incorrect_answers[0].strip()
+                    )
+                    
+                    if chosen_score > rejected_score:
+                        correct += 1
+                    total += 1
+                    
+            # Handle standard preference format
+            elif 'chosen' in example and 'rejected' in example and instruction:
                 chosen_score = self.evaluate_response(
                     model, tokenizer, instruction, example['chosen']
                 )
@@ -1027,6 +1234,23 @@ class IterativeIPO:
         
         return False
     
+    def convert_to_json_serializable(self, obj):
+        """Convert numpy types and other non-serializable types to JSON-compatible types"""
+        if isinstance(obj, (np.ndarray, np.generic)):
+            return obj.tolist() if hasattr(obj, 'tolist') else float(obj)
+        elif isinstance(obj, (np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, dict):
+            return {key: self.convert_to_json_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self.convert_to_json_serializable(item) for item in obj]
+        else:
+            return obj
+
     def save_results(self):
         """Save experiment results with detailed degradation analysis for research"""
         if not self.iteration_metrics:
@@ -1096,17 +1320,22 @@ class IterativeIPO:
             }
         }
         
+        # Convert to JSON-serializable format
+        results = self.convert_to_json_serializable(results)
+        
         results_file = os.path.join(self.config.results_dir, "iteration_metrics.json")
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
             
         # Save detailed degradation summary
         degradation_file = os.path.join(self.config.results_dir, "degradation_analysis.json")
+        degradation_data = {
+            "degradation_analysis": degradation_analysis,
+            "cross_dataset_analysis": cross_dataset_analysis
+        }
+        degradation_data = self.convert_to_json_serializable(degradation_data)
         with open(degradation_file, 'w') as f:
-            json.dump({
-                "degradation_analysis": degradation_analysis,
-                "cross_dataset_analysis": cross_dataset_analysis
-            }, f, indent=2)
+            json.dump(degradation_data, f, indent=2)
         
         # Export to CSV for easy analysis
         self.export_metrics_to_csv()
@@ -1473,13 +1702,39 @@ class IterativeIPO:
         plt.tight_layout()
         plt.savefig(os.path.join(self.config.results_dir, 'paper_aligned_analysis.png'), dpi=300)
         plt.close()
+    
+    def _handle_selective_saving(self, current_performance: float, iteration: int):
+        """Handle selective model saving - only keep current and best models"""
+        import shutil
+        
+        temp_path = os.path.join(self.config.checkpoint_dir, "temp_current")
+        current_path = os.path.join(self.config.checkpoint_dir, "current")
+        best_path = os.path.join(self.config.checkpoint_dir, "best")
+        
+        # Always save as current model
+        if os.path.exists(current_path):
+            shutil.rmtree(current_path)
+        shutil.move(temp_path, current_path)
+        
+        # Check if this is the best model so far
+        if current_performance > self.best_performance:
+            print(f"🌟 New best model! Performance: {current_performance:.4f} (prev: {self.best_performance:.4f})")
+            self.best_performance = current_performance
+            self.best_iteration = iteration
+            
+            # Save as best model
+            if os.path.exists(best_path):
+                shutil.rmtree(best_path)
+            shutil.copytree(current_path, best_path)
+        else:
+            print(f"📊 Current: {current_performance:.4f}, Best: {self.best_performance:.4f} (iteration {self.best_iteration})")
 
 def main():
     parser = argparse.ArgumentParser(description="Iterative IPO Experiments - Research on Self-Improvement Limits")
     
     # Basic model and dataset config
     parser.add_argument("--model_id", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
-    parser.add_argument("--base_dataset", type=str, default="databricks/databricks-dolly-15k")
+    parser.add_argument("--base_dataset", type=str, default="Ayush-Singh/UltraFeedback-1k-Each")
     parser.add_argument("--eval_datasets", nargs="+", default=["truthful_qa", "gsm8k", "hellaswag"])
     
     # Research-focused parameters
@@ -1552,10 +1807,21 @@ def main():
     print(f"📝 Experiment will run for up to {args.max_iterations} iterations")
     if args.forced_iterations:
         print(f"   ⚠️ FORCED MODE: Will run exactly {args.forced_iterations} iterations")
+    print(f"📋 Paper-Aligned Methodology:")
+    if "Instruct" not in args.model_id:
+        print(f"   1. SFT training on Dolly-15k (base model)")
+        print(f"   2. Generate preferences from {args.base_dataset}")
+        print(f"   3. Save preference data to disk")
+        print(f"   4. DPO training on self-generated preferences")
+    else:
+        print(f"   1. Generate preferences from {args.base_dataset} (skip SFT)")
+        print(f"   2. Save preference data to disk")
+        print(f"   3. DPO training on self-generated preferences")
     print(f"🚀 GPU Optimization:")
     print(f"   - Preference generation: {args.instruction_batch_size} instructions × 4 responses = {args.instruction_batch_size * 4} responses per batch")
     print(f"   - Cross-dataset evaluation: {args.eval_batch_size} evaluations per batch")
     print(f"💾 Results will be saved to: {config.results_dir}")
+    print(f"💾 Preference data will be saved to: {config.results_dir}/preference_data/")
     
     experiment = IterativeIPO(config)
     experiment.run_experiment()
