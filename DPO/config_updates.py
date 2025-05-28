@@ -22,7 +22,7 @@ PAPER_MODELS = {
 # Updated hyperparameters from paper
 PAPER_HYPERPARAMETERS = {
     "dpo_beta": 0.1,  # From original implementation
-    "learning_rate": 5e-5,
+    "learning_rate": 3.75e5, # reduced to account for higher batch size
     "lora_r": 256,
     "lora_alpha": 128,
     "lora_dropout": 0.05,
@@ -96,9 +96,10 @@ REWARDBENCH_SUBSETS = [
 def get_updated_training_config():
     return {
         "per_device_train_batch_size": 8,  # Increased to use more GPU memory
-        "per_device_eval_batch_size": 16,  # Higher for eval since no gradients
-        "gradient_accumulation_steps": 2,  # Reduced to maintain effective batch size of 16
+        "per_device_eval_batch_size": 64,  # Higher for eval since no gradients
+        "gradient_accumulation_steps": 1,
         "gradient_checkpointing": True,
+        "learning_rate": PAPER_HYPERPARAMETERS["learning_rate"],
         "bf16": True,  # Or fp16 depending on hardware
         "logging_steps": 10,
         "eval_steps": 200,  # Reduced frequency for speed
