@@ -5,7 +5,7 @@
 echo "=== Experiment 1: Testing iteration limits ==="
 
 # Small model (1B parameters)
-python iterative_ipo.py \
+python DPO/iterative_ipo.py \
     --model_id "meta-llama/Llama-3.2-1B-Instruct" \
     --base_dataset "databricks/databricks-dolly-15k" \
     --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
@@ -19,7 +19,7 @@ python iterative_ipo.py \
 sleep 30
 
 # Medium model (7B parameters) - if you have enough GPU memory
-# python iterative_ipo.py \
+# python DPO/iterative_ipo.py \
 #     --model_id "mistralai/Mistral-7B-Instruct-v0.1" \
 #     --base_dataset "databricks/databricks-dolly-15k" \
 #     --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
@@ -32,7 +32,7 @@ sleep 30
 # Experiment 2: Cross-dataset transfer analysis
 echo "=== Experiment 2: Cross-dataset transfer ==="
 
-python run_cross_dataset_experiments.py \
+python DPO/run_cross_dataset_experiments.py \
     --model_id "meta-llama/Llama-3.2-1B-Instruct" \
     --experiment_name "transfer_analysis_v1" \
     --datasets "dolly" "alpaca" "gsm8k" "truthful_qa" \
@@ -43,7 +43,7 @@ echo "=== Experiment 3: Sample size impact ==="
 
 for samples in 100 500 1000 2000; do
     echo "Running with $samples samples per iteration..."
-    python iterative_ipo.py \
+    python DPO/iterative_ipo.py \
         --model_id "meta-llama/Llama-3.2-1B-Instruct" \
         --base_dataset "databricks/databricks-dolly-15k" \
         --eval_datasets "truthful_qa" \
@@ -60,7 +60,7 @@ echo "=== Analyzing degradation patterns ==="
 for exp_dir in ./results/iter_limit_*; do
     if [ -d "$exp_dir" ]; then
         echo "Analyzing $exp_dir..."
-        python analyze_degradation.py --results_dir "$exp_dir"
+        python DPO/analyze_degradation.py --results_dir "$exp_dir"
     fi
 done
 

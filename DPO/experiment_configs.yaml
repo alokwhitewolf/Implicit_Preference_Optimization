@@ -1,4 +1,12 @@
 # Experiment configurations for iterative IPO research
+#
+# NOTE: This file documents the full experimental design.
+# Currently implemented experiments (in run_experiments.sh):
+#   - Experiment 1: Iteration limits
+#   - Experiment 2: Cross-dataset transfer  
+#   - Experiment 3: Sample efficiency
+# 
+# Experiments 4-6 are planned for future work.
 
 # Base configuration
 base_config:

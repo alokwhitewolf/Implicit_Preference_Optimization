@@ -74,9 +74,13 @@ python DPO/analyze_degradation.py \
 
 ### Batch Experiments
 
-Use the provided shell script for comprehensive experiments:
+Use the provided shell scripts:
 
 ```bash
+# Quick test (verify setup)
+./run_quick_test.sh
+
+# Full experiments
 ./DPO/run_experiments.sh
 ```
 
