@@ -45,7 +45,7 @@ echo "✅ Test 1B completed!"
 echo "=== Experiment 2: Cross-Dataset Transfer Analysis ==="
 
 echo "🧪 Test 2A: Training on different datasets, evaluating on all"
-python DPO/cross_dataset_experiments.py \
+python DPO/cross_dataset_experiment.py \
     --model_id "meta-llama/Llama-3.2-1B-Instruct" \
     --datasets "databricks/databricks-dolly-15k" "tatsu-lab/alpaca" \
     --max_iterations 12 \
