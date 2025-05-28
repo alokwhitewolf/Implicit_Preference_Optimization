@@ -135,6 +135,7 @@ class IterativeIPO:
             quantization_config=bnb_config,
             torch_dtype=torch.bfloat16,
             device_map="auto",
+            use_cache=False,  # Match ours.py - important for PEFT compatibility
             trust_remote_code=True,
             attn_implementation=attn_implementation,
             max_memory={0: "35GB"},  # Force using more GPU memory
@@ -188,7 +189,7 @@ class IterativeIPO:
         # SFT configuration (from paper appendix)
         sft_checkpoint_path = os.path.join(self.config.checkpoint_dir, f"sft_iteration_{iteration}")
         
-        # LoRA configuration for SFT - match ours.py configuration  
+        # LoRA configuration for SFT - match ours.py exactly
         sft_peft_config = LoraConfig(
             lora_alpha=128,
             lora_dropout=0.05,
@@ -212,7 +213,7 @@ class IterativeIPO:
             logging_steps=25,
             save_steps=500,
             eval_steps=500,
-            evaluation_strategy="steps",
+            eval_strategy="steps",
             gradient_checkpointing=True,
             warmup_ratio=0.1,
             bf16=True,
@@ -610,7 +611,7 @@ class IterativeIPO:
         """Train one iteration with paper-aligned configuration"""
         checkpoint_path = os.path.join(self.config.checkpoint_dir, f"iteration_{iteration}")
         
-        # LoRA configuration - match ours.py configuration
+        # LoRA configuration - match ours.py exactly
         peft_config = LoraConfig(
             lora_alpha=128,
             lora_dropout=0.05,
@@ -637,7 +638,7 @@ class IterativeIPO:
             logging_steps=25,  # Match ours.py
             save_steps=500,  # Match ours.py
             save_total_limit=2,  # Match ours.py
-            evaluation_strategy="steps",  # Match ours.py
+            eval_strategy="steps",  # Match ours.py
             eval_steps=300,  # Match ours.py
             bf16=True,  # Match ours.py
             push_to_hub=False,  # Match ours.py
