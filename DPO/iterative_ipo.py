@@ -33,10 +33,21 @@ def main():
     parser.add_argument("--track_degradation", action="store_true", default=True)
     parser.add_argument("--save_all_checkpoints", action="store_true", default=True)
     
-    # External evaluation parameters
-    parser.add_argument("--enable_external_eval", action="store_true", default=True, help="Enable external benchmark evaluation")
+    # RewardBench IPO evaluation parameters (matches paper)
+    parser.add_argument("--enable_rewardbench_eval", action="store_true", default=True, help="Enable RewardBench IPO evaluation")
+    parser.add_argument("--rewardbench_eval_frequency", type=int, default=1, help="Evaluate every N iterations")
+    parser.add_argument("--rewardbench_samples", type=int, default=100, help="Number of RewardBench samples")
+    
+    # Performance optimization parameters
+    parser.add_argument("--parallel_category_eval", action="store_true", default=True, help="Evaluate categories in parallel")
+    parser.add_argument("--use_fast_rewardbench", action="store_true", default=True, help="Use optimized fast evaluator")
+    parser.add_argument("--eval_batch_size", type=int, default=8, help="Batch size for P(Yes) extraction")
+    
+    # Legacy external evaluation (deprecated)
+    parser.add_argument("--enable_external_eval", action="store_true", default=False, help="Enable legacy external evaluation")
     parser.add_argument("--external_eval_frequency", type=int, default=1, help="Evaluate every N iterations")
     parser.add_argument("--external_eval_samples", type=int, default=100, help="Samples per benchmark dataset")
+    parser.add_argument("--eval_batch_size", type=int, default=8, help="Batch size for evaluation (higher = faster but more memory)")
     
     # Arguments that are ignored but accepted for compatibility
     parser.add_argument("--eval_datasets", nargs="*", help="Cross-dataset evaluation (ignored - use cross_dataset_experiment.py)")
@@ -91,9 +102,18 @@ def main():
         track_degradation=args.track_degradation,
         forced_iterations=args.forced_iterations,
         instruction_batch_size=args.instruction_batch_size,
+        
+        # RewardBench IPO evaluation configs (matches paper)
+        enable_rewardbench_eval=args.enable_rewardbench_eval,
+        rewardbench_eval_frequency=args.rewardbench_eval_frequency,
+        rewardbench_samples=args.rewardbench_samples,
+        
+        # Performance optimization configs
+        parallel_category_eval=args.parallel_category_eval,
+        use_fast_rewardbench=args.use_fast_rewardbench,
         eval_batch_size=args.eval_batch_size,
         
-        # External evaluation configs
+        # Legacy external evaluation configs
         enable_external_eval=args.enable_external_eval,
         external_eval_frequency=args.external_eval_frequency,
         external_eval_samples=args.external_eval_samples
@@ -104,17 +124,23 @@ def main():
     print(f"📝 Experiment will run for up to {args.max_iterations} iterations")
     if args.forced_iterations:
         print(f"   ⚠️ FORCED MODE: Will run exactly {args.forced_iterations} iterations")
-    print(f"📋 Enhanced Methodology (improved from ours.py):")
+    print(f"📋 IPO Methodology (matches paper exactly):")
     print(f"   1. Generate preferences from {args.base_dataset}")
     print(f"   2. DPO training on self-generated preferences")
-    print(f"   3. Evaluate on external benchmarks (GSM8K, TruthfulQA, HellaSwag)")
-    print(f"   4. Repeat and track REAL performance improvements")
+    print(f"   3. RewardBench IPO evaluation using P(Yes) extraction")
+    print(f"   4. Track self-improvement trends across categories")
     print(f"🚀 GPU Optimization:")
     print(f"   - Preference generation: {args.instruction_batch_size} instructions × 4 responses")
-    if args.enable_external_eval:
-        print(f"📊 External evaluation:")
-        print(f"   - Frequency: every {args.external_eval_frequency} iteration(s)")
-        print(f"   - Samples per dataset: {args.external_eval_samples}")
+    if args.enable_rewardbench_eval:
+        print(f"📊 RewardBench IPO evaluation:")
+        print(f"   - Categories: Chat, Code, Math, Safety")
+        print(f"   - Frequency: every {args.rewardbench_eval_frequency} iteration(s)")
+        print(f"   - Samples: {args.rewardbench_samples}")
+        print(f"   - Method: P(Yes) probability extraction")
+        if args.use_fast_rewardbench:
+            print(f"   - 🚀 Fast mode: batch_size={args.eval_batch_size}, parallel={args.parallel_category_eval}")
+        else:
+            print(f"   - 🐌 Standard mode (slower but safer)")
     print(f"💾 Results will be saved to: {config.results_dir}")
     print(f"🔬 For cross-dataset transfer analysis, use: cross_dataset_experiment.py")
     

@@ -19,7 +19,8 @@ from .training.preference_gen import PreferenceGenerator
 from .training.sft_trainer import SFTTrainerWrapper
 from .training.dpo_trainer import DPOTrainerWrapper
 from .evaluation.self_evaluator import SelfEvaluator
-from .evaluation.external_evaluator import ExternalEvaluator
+from .evaluation.rewardbench_evaluator import RewardBenchIPOEvaluator
+from .evaluation.fast_rewardbench_evaluator import FastRewardBenchIPOEvaluator
 from .analysis.metrics import MetricsCalculator
 from .analysis.reporting import ResultsReporter
 
@@ -39,7 +40,13 @@ class IterativeIPO:
         self.sft_trainer = SFTTrainerWrapper(config)
         self.dpo_trainer = DPOTrainerWrapper(config)
         self.self_evaluator = SelfEvaluator(config)
-        self.external_evaluator = ExternalEvaluator(config)
+        # Choose evaluator based on config
+        if getattr(config, 'use_fast_rewardbench', True):
+            self.rewardbench_evaluator = FastRewardBenchIPOEvaluator(config)
+            print("🚀 Using fast RewardBench evaluator with batching")
+        else:
+            self.rewardbench_evaluator = RewardBenchIPOEvaluator(config)
+            print("🐌 Using standard RewardBench evaluator")
         self.metrics_calculator = MetricsCalculator(config)
         self.results_reporter = ResultsReporter(config)
         
@@ -107,11 +114,11 @@ class IterativeIPO:
             category_scores = self.self_evaluator.evaluate_categories(train_prefs)
             self_eval_accuracy = self.metrics_calculator.calculate_self_eval_accuracy(category_scores)
             
-            # Step 7: External evaluation on real benchmarks
-            external_scores = {}
-            if (self.config.enable_external_eval and 
-                iteration % self.config.external_eval_frequency == 0):
-                external_scores = self.external_evaluator.evaluate_all_datasets(
+            # Step 7: RewardBench IPO evaluation (matches paper methodology)
+            rewardbench_scores = {}
+            if (self.config.enable_rewardbench_eval and 
+                iteration % self.config.rewardbench_eval_frequency == 0):
+                rewardbench_scores = self.rewardbench_evaluator.evaluate_rewardbench_ipo(
                     model, tokenizer, iteration + 1
                 )
             
@@ -129,10 +136,12 @@ class IterativeIPO:
                 response_diversity=response_diversity,
                 category_scores=category_scores,
                 
-                # External benchmark scores
-                gsm8k_accuracy=external_scores.get('gsm8k_accuracy', 0.0),
-                truthful_qa_score=external_scores.get('truthful_qa_score', 0.0),
-                hellaswag_accuracy=external_scores.get('hellaswag_accuracy', 0.0),
+                # RewardBench IPO scores (matches paper methodology)
+                rewardbench_chat=rewardbench_scores.get('rewardbench_chat', 0.0),
+                rewardbench_code=rewardbench_scores.get('rewardbench_code', 0.0),
+                rewardbench_math=rewardbench_scores.get('rewardbench_math', 0.0),
+                rewardbench_safety=rewardbench_scores.get('rewardbench_safety', 0.0),
+                rewardbench_overall=rewardbench_scores.get('rewardbench_overall', 0.0),
                 
                 timestamp=datetime.now().isoformat()
             )
@@ -149,12 +158,14 @@ class IterativeIPO:
                 **{f"category/{k}": v for k, v in category_scores.items()},
             }
             
-            # Add external scores if available
-            if external_scores:
+            # Add RewardBench IPO scores if available
+            if rewardbench_scores:
                 wandb_log.update({
-                    "benchmark/gsm8k_accuracy": external_scores.get('gsm8k_accuracy', 0.0),
-                    "benchmark/truthful_qa_score": external_scores.get('truthful_qa_score', 0.0),
-                    "benchmark/hellaswag_accuracy": external_scores.get('hellaswag_accuracy', 0.0),
+                    "rewardbench/chat": rewardbench_scores.get('rewardbench_chat', 0.0),
+                    "rewardbench/code": rewardbench_scores.get('rewardbench_code', 0.0),
+                    "rewardbench/math": rewardbench_scores.get('rewardbench_math', 0.0),
+                    "rewardbench/safety": rewardbench_scores.get('rewardbench_safety', 0.0),
+                    "rewardbench/overall": rewardbench_scores.get('rewardbench_overall', 0.0),
                 })
             
             wandb.log(wandb_log)
@@ -163,9 +174,9 @@ class IterativeIPO:
             self.results_reporter.save_results(self.iteration_metrics, iteration + 1)
             
             # Handle selective model saving after evaluation
-            # Use external benchmark performance if available, otherwise fall back to self-eval
+            # Use RewardBench overall performance if available, otherwise fall back to self-eval
             performance_metric = (
-                external_scores.get('gsm8k_accuracy', 0.0) if external_scores 
+                rewardbench_scores.get('rewardbench_overall', 0.0) if rewardbench_scores 
                 else self_eval_accuracy
             )
             
@@ -209,12 +220,12 @@ class IterativeIPO:
         if len(self.iteration_metrics) < 3:
             return False
         
-        # Use external benchmark scores if available, otherwise self-eval
+        # Use RewardBench overall scores if available, otherwise self-eval
         recent_scores = []
         for m in self.iteration_metrics[-3:]:
-            # Prioritize GSM8K as primary metric, fallback to self-eval
-            if m.gsm8k_accuracy > 0:
-                recent_scores.append(m.gsm8k_accuracy)
+            # Prioritize RewardBench overall as primary metric, fallback to self-eval
+            if m.rewardbench_overall > 0:
+                recent_scores.append(m.rewardbench_overall)
             else:
                 recent_scores.append(m.self_eval_accuracy)
         
@@ -226,7 +237,7 @@ class IterativeIPO:
         
         # Stop if degrading for 2+ consecutive iterations
         if degradation_count >= 2:
-            metric_name = "GSM8K accuracy" if self.iteration_metrics[-1].gsm8k_accuracy > 0 else "self-eval accuracy"
+            metric_name = "RewardBench overall" if self.iteration_metrics[-1].rewardbench_overall > 0 else "self-eval accuracy"
             print(f"⚠️ {metric_name} degrading: {recent_scores}")
             return True
         

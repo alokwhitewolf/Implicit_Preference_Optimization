@@ -1,162 +1,61 @@
 #!/bin/bash
-# Research Experiments: Testing Self-Improvement Limits and Cross-Dataset Transfer
+# IPO Self-Improvement: Paper-Aligned Setup with Iterative Training
 
-echo "🔬 Starting IPO Self-Improvement Research Experiments"
-echo "📊 Research Questions:"
-echo "   1. How many iterations before performance plateaus/degrades?"
-echo "   2. How does training on one dataset affect others?"
+echo "🔬 Starting IPO Self-Improvement Experiments"
+echo "📋 Paper-Aligned Setup:"
+echo "   - 4,000 prompts from UltraFeedback (matches IPO paper)"
+echo "   - Generate preferences → DPO training → RewardBench evaluation"
+echo "   - Repeat for 15 epochs until performance saturates or degrades"
+echo "📊 Research Question: How many epochs before RewardBench performance plateaus/degrades?"
 echo ""
 
-# Experiment 1: Test iteration limits with different models
-echo "=== Experiment 1: Self-Improvement Limits Testing ==="
-
-# Test 1A: Small instruct model with forced long run (to observe full degradation cycle)
-echo "🧪 Test 1A: Llama-1B-Instruct with 15 forced iterations (balanced dataset)"
+# Experiment 1: Llama-1B-Instruct for 15 epochs
+echo "🧪 Experiment 1: Llama-1B-Instruct with 15 epochs (4k prompts each)"
 python DPO/iterative_ipo.py \
     --model_id "meta-llama/Llama-3.2-1B-Instruct" \
     --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
-    --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
     --forced_iterations 15 \
-    --samples_per_iteration 500 \
+    --samples_per_iteration 4000 \
     --instruction_batch_size 64 \
-    --experiment_type "limit_testing" \
+    --enable_rewardbench_eval \
+    --rewardbench_samples 500 \
+    --use_fast_rewardbench \
+    --eval_batch_size 32 \
+    --parallel_category_eval \
     --track_degradation \
-    --cross_dataset_eval \
-    --plateau_window 3
+    --results_dir "./results/llama_4k_15epochs" \
+    --checkpoint_dir "./checkpoints/llama_4k_15epochs" \
+    --wandb_project "ipo-paper-aligned"
 
-echo "✅ Test 1A completed!"
+echo "✅ Llama experiment completed!"
 
-# Test 1B: Qwen instruct model comparison (paper's top performer)
-echo "🧪 Test 1B: Qwen-1.5B-Instruct with natural stopping (balanced dataset)"
+# Experiment 2: Qwen-1.5B-Instruct for 15 epochs
+echo "🧪 Experiment 2: Qwen-1.5B-Instruct with 15 epochs (4k prompts each)"
 python DPO/iterative_ipo.py \
     --use_qwen \
     --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
-    --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
-    --max_iterations 15 \
+    --forced_iterations 15 \
+    --samples_per_iteration 4000 \
     --instruction_batch_size 64 \
-    --samples_per_iteration 500 \
-    --experiment_type "limit_testing" \
+    --enable_rewardbench_eval \
+    --rewardbench_samples 500 \
+    --use_fast_rewardbench \
+    --eval_batch_size 32 \
+    --parallel_category_eval \
     --track_degradation \
-    --cross_dataset_eval
+    --results_dir "./results/qwen_4k_15epochs" \
+    --checkpoint_dir "./checkpoints/qwen_4k_15epochs" \
+    --wandb_project "ipo-paper-aligned"
 
-echo "✅ Test 1B completed!"
-
-# Experiment 2: Cross-dataset transfer analysis
-echo "=== Experiment 2: Cross-Dataset Transfer Analysis ==="
-
-echo "🧪 Test 2A: Training on balanced dataset, evaluating cross-dataset transfer"
-python DPO/iterative_ipo.py \
-    --model_id "meta-llama/Llama-3.2-1B-Instruct" \
-    --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
-    --eval_datasets "truthful_qa" "gsm8k" "hellaswag" "tatsu-lab/alpaca" \
-    --max_iterations 12 \
-    --samples_per_iteration 500 \
-    --experiment_type "cross_dataset_transfer" \
-    --results_dir "./results/cross_dataset_transfer"
-
-echo "✅ Test 2A completed!"
-
-# Experiment 3: Sample size impact on degradation patterns
-echo "=== Experiment 3: Sample Size Impact on Self-Improvement ==="
-
-for samples in 250 500 1000; do
-    echo "🧪 Test 3: Running with $samples samples per iteration (balanced dataset)..."
-    python DPO/iterative_ipo.py \
-        --model_id "meta-llama/Llama-3.2-1B-Instruct" \
-        --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
-        --eval_datasets "truthful_qa" "gsm8k" \
-        --max_iterations 15 \
-        --samples_per_iteration $samples \
-        --experiment_type "limit_testing" \
-        --track_degradation \
-        --results_dir "./results/sample_size_impact" \
-        --checkpoint_dir "./checkpoints/sample_size_impact"
-    
-    echo "✅ Sample size $samples completed!"
-done
-
-# Experiment 4: Different datasets as training base
-echo "=== Experiment 4: Different Training Datasets Impact ==="
-
-# Use balanced UltraFeedback dataset for consistent comparison
-echo "🧪 Test 4: Training on UltraFeedback balanced dataset (instruct model)"
-
-python DPO/iterative_ipo.py \
-    --model_id "meta-llama/Llama-3.2-1B-Instruct" \
-    --base_dataset "Ayush-Singh/UltraFeedback-1k-Each" \
-    --eval_datasets "truthful_qa" "gsm8k" "hellaswag" \
-    --max_iterations 15 \
-    --instruction_batch_size 64 \
-    --samples_per_iteration 500 \
-    --experiment_type "limit_testing" \
-    --track_degradation \
-    --cross_dataset_eval \
-    --results_dir "./results/balanced_dataset_impact" \
-    --checkpoint_dir "./checkpoints/balanced_dataset_impact"
-
-echo "✅ Balanced dataset training completed!"
-
-# Analysis and Summary
-echo "=== Final Analysis and Summary ==="
-
-echo "📊 Analyzing all experimental results..."
-
-# Create summary analysis script call
-python3 -c "
-import os
-import json
-import glob
-import pandas as pd
-import matplotlib.pyplot as plt
-
-print('🔍 Collecting results from all experiments...')
-
-results_dirs = [
-    './results/self_improvement_limits/',
-    './results/cross_dataset_transfer/',
-    './results/sample_size_impact/',
-    './results/base_dataset_impact/'
-]
-
-summary = {
-    'experiments_completed': 0,
-    'max_iterations_reached': [],
-    'degradation_patterns': [],
-    'transfer_effects': []
-}
-
-for results_dir in results_dirs:
-    if os.path.exists(results_dir):
-        for exp_dir in glob.glob(f'{results_dir}/*'):
-            if os.path.isdir(exp_dir):
-                metrics_file = os.path.join(exp_dir, 'iteration_metrics.json')
-                if os.path.exists(metrics_file):
-                    with open(metrics_file) as f:
-                        data = json.load(f)
-                    summary['experiments_completed'] += 1
-                    summary['max_iterations_reached'].append(data['final_performance']['iterations_completed'])
-
-print(f'✅ Analysis complete!')
-print(f'📈 Total experiments: {summary[\"experiments_completed\"]}')
-if summary['max_iterations_reached']:
-    print(f'📊 Average iterations reached: {sum(summary[\"max_iterations_reached\"])/len(summary[\"max_iterations_reached\"]):.1f}')
-    print(f'📊 Max iterations in any experiment: {max(summary[\"max_iterations_reached\"])}')
-print(f'💾 Detailed results available in ./results/ subdirectories')
-"
+echo "✅ Qwen experiment completed!"
 
 echo ""
-echo "🎉 All IPO Self-Improvement Research Experiments Completed!"
+echo "🎉 All IPO Paper-Aligned Experiments Completed!"
+echo "📊 Results:"
+echo "   📁 Llama results: ./results/llama_4k_15epochs/"
+echo "   📁 Qwen results: ./results/qwen_4k_15epochs/"
 echo ""
-echo "📋 Summary of Results:"
-echo "   📁 Self-improvement limits: ./results/self_improvement_limits/"
-echo "   📁 Cross-dataset transfer: ./results/cross_dataset_transfer/"
-echo "   📁 Sample size impact: ./results/sample_size_impact/"
-echo "   📁 Base dataset impact: ./results/base_dataset_impact/"
-echo ""
-echo "🔍 Key Questions Answered:"
-echo "   ✅ How many iterations before plateau/degradation?"
-echo "   ✅ How does training dataset choice affect cross-dataset performance?"
-echo "   ✅ What's the impact of sample size on self-improvement limits?"
-echo "   ✅ Do different models show different degradation patterns?"
-echo ""
-echo "📊 Next steps: Analyze the results in ./results/ directories"
+echo "🔍 Analysis:"
+echo "   - Compare RewardBench category trends (Chat/Code/Math/Safety)"
+echo "   - Identify saturation/degradation points for each model"
+echo "   - Total training data per model: 4k × 15 = 60k preference pairs"

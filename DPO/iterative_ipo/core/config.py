@@ -18,10 +18,12 @@ class IterationMetrics:
     response_diversity: float
     category_scores: Dict[str, float]
     
-    # External benchmark scores
-    gsm8k_accuracy: float = 0.0
-    truthful_qa_score: float = 0.0
-    hellaswag_accuracy: float = 0.0
+    # RewardBench IPO scores (matches paper methodology)
+    rewardbench_chat: float = 0.0
+    rewardbench_code: float = 0.0
+    rewardbench_math: float = 0.0
+    rewardbench_safety: float = 0.0
+    rewardbench_overall: float = 0.0
     
     timestamp: str = ""
 
@@ -58,11 +60,21 @@ class ExperimentConfig:
     instruction_batch_size: int = 4
     eval_batch_size: int = 16
     
-    # External evaluation settings
-    enable_external_eval: bool = True
-    external_eval_frequency: int = 1  # Evaluate every N iterations
-    external_eval_datasets: List[str] = None  # Default: ['gsm8k', 'truthful_qa', 'hellaswag']
-    external_eval_samples: int = 100  # Number of samples per dataset
+    # RewardBench IPO evaluation settings (matches paper)
+    enable_rewardbench_eval: bool = True
+    rewardbench_eval_frequency: int = 1  # Evaluate every N iterations
+    rewardbench_samples: int = 100  # Number of samples from RewardBench
+    
+    # Performance optimization settings
+    parallel_category_eval: bool = True  # Evaluate categories in parallel
+    eval_batch_size: int = 8  # Batch size for P(Yes) extraction
+    use_fast_rewardbench: bool = True  # Use optimized evaluator
+    
+    # Legacy external eval settings (deprecated in favor of RewardBench)
+    enable_external_eval: bool = False
+    external_eval_frequency: int = 1
+    external_eval_datasets: List[str] = None
+    external_eval_samples: int = 100
     
     # Multi-GPU configuration (future)
     use_multigpu: bool = False

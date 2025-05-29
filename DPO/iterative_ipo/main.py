@@ -47,11 +47,10 @@ def main():
         num_responses_per_instruction=4,
         save_all_checkpoints=False,  # Only save current and best
         
-        # External evaluation settings
-        enable_external_eval=True,
-        external_eval_frequency=1,  # Evaluate every iteration
-        external_eval_datasets=['gsm8k', 'truthful_qa', 'hellaswag'],
-        external_eval_samples=100,  # Number of samples per dataset
+        # RewardBench IPO evaluation settings (matches paper)
+        enable_rewardbench_eval=True,
+        rewardbench_eval_frequency=1,  # Evaluate every iteration
+        rewardbench_samples=100,  # Number of RewardBench samples
         
         # Paths
         base_dataset_path="databricks-dolly-15k",
@@ -67,11 +66,12 @@ def main():
     print(f"Model: {config.model_id}")
     print(f"Max iterations: {config.max_iterations}")
     print(f"Samples per iteration: {config.samples_per_iteration}")
-    print(f"External evaluation: {config.enable_external_eval}")
-    if config.enable_external_eval:
-        print(f"  Datasets: {config.external_eval_datasets}")
-        print(f"  Samples per dataset: {config.external_eval_samples}")
-        print(f"  Frequency: every {config.external_eval_frequency} iteration(s)")
+    print(f"RewardBench IPO evaluation: {config.enable_rewardbench_eval}")
+    if config.enable_rewardbench_eval:
+        print(f"  Categories: Chat, Code, Math, Safety")
+        print(f"  Samples: {config.rewardbench_samples}")
+        print(f"  Frequency: every {config.rewardbench_eval_frequency} iteration(s)")
+        print(f"  Method: P(Yes) probability extraction (IPO paper)")
     print(f"Checkpoint dir: {config.checkpoint_dir}")
     print(f"Results dir: {config.results_dir}")
     
