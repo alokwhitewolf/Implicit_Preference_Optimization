@@ -132,3 +132,115 @@ class MetricsCalculator:
                         return True
         
         return False
+    
+    def calculate_final_metrics(self, iteration_metrics: List[IterationMetrics]) -> Dict[str, float]:
+        """Calculate comprehensive final experiment metrics"""
+        if not iteration_metrics:
+            return {}
+        
+        # Performance metrics
+        accuracies = [m.self_eval_accuracy for m in iteration_metrics]
+        train_losses = [m.train_loss for m in iteration_metrics]
+        eval_losses = [m.eval_loss for m in iteration_metrics]
+        
+        # Find peak performance
+        peak_accuracy = max(accuracies)
+        peak_iteration = accuracies.index(peak_accuracy) + 1
+        final_accuracy = accuracies[-1]
+        
+        # Calculate degradation
+        degradation = (peak_accuracy - final_accuracy) / peak_accuracy if peak_accuracy > 0 else 0
+        
+        # Stability metrics
+        agreements = [m.preference_agreement for m in iteration_metrics]
+        diversities = [m.response_diversity for m in iteration_metrics]
+        
+        # Category performance analysis
+        category_trends = {}
+        for category in ['code', 'math', 'chat', 'safety', 'reasoning']:
+            cat_scores = [m.category_scores.get(category, 0) for m in iteration_metrics]
+            if any(s > 0 for s in cat_scores):
+                category_trends[f"category_{category}_peak"] = max(cat_scores)
+                category_trends[f"category_{category}_final"] = cat_scores[-1]
+                category_trends[f"category_{category}_degradation"] = (max(cat_scores) - cat_scores[-1]) / max(cat_scores) if max(cat_scores) > 0 else 0
+        
+        return {
+            "peak_accuracy": peak_accuracy,
+            "peak_iteration": peak_iteration,
+            "final_accuracy": final_accuracy,
+            "total_degradation": degradation,
+            "iterations_after_peak": len(iteration_metrics) - peak_iteration,
+            "avg_train_loss": sum(train_losses) / len(train_losses),
+            "avg_eval_loss": sum(eval_losses) / len(eval_losses),
+            "final_train_loss": train_losses[-1],
+            "final_eval_loss": eval_losses[-1],
+            "avg_preference_agreement": sum(agreements) / len(agreements),
+            "avg_response_diversity": sum(diversities) / len(diversities),
+            "final_preference_agreement": agreements[-1],
+            "final_response_diversity": diversities[-1],
+            **category_trends
+        }
+    
+    def calculate_trends(self, iteration_metrics: List[IterationMetrics]) -> Dict[str, any]:
+        """Calculate performance trends across iterations"""
+        if len(iteration_metrics) < 2:
+            return {}
+        
+        import numpy as np
+        from scipy import stats
+        
+        iterations = list(range(1, len(iteration_metrics) + 1))
+        accuracies = [m.self_eval_accuracy for m in iteration_metrics]
+        agreements = [m.preference_agreement for m in iteration_metrics]
+        diversities = [m.response_diversity for m in iteration_metrics]
+        
+        # Linear regression for trends
+        accuracy_slope, _, accuracy_r, accuracy_p, _ = stats.linregress(iterations, accuracies)
+        agreement_slope, _, agreement_r, agreement_p, _ = stats.linregress(iterations, agreements)
+        diversity_slope, _, diversity_r, diversity_p, _ = stats.linregress(iterations, diversities)
+        
+        return {
+            "accuracy_slope": accuracy_slope,
+            "accuracy_trend": "improving" if accuracy_slope > 0.001 else "declining" if accuracy_slope < -0.001 else "stable",
+            "accuracy_correlation": accuracy_r,
+            "accuracy_significance": accuracy_p,
+            "agreement_slope": agreement_slope,
+            "agreement_trend": "improving" if agreement_slope > 0.001 else "declining" if agreement_slope < -0.001 else "stable",
+            "agreement_correlation": agreement_r,
+            "diversity_slope": diversity_slope,
+            "diversity_trend": "improving" if diversity_slope > 0.001 else "declining" if diversity_slope < -0.001 else "stable",
+            "diversity_correlation": diversity_r,
+        }
+    
+    def calculate_final_statistics(self, iteration_metrics: List[IterationMetrics]) -> Dict[str, float]:
+        """Calculate final experiment statistics"""
+        if not iteration_metrics:
+            return {}
+        
+        import numpy as np
+        
+        # Extract all metrics
+        accuracies = [m.self_eval_accuracy for m in iteration_metrics]
+        train_losses = [m.train_loss for m in iteration_metrics]
+        eval_losses = [m.eval_loss for m in iteration_metrics]
+        agreements = [m.preference_agreement for m in iteration_metrics]
+        diversities = [m.response_diversity for m in iteration_metrics]
+        
+        # Calculate statistics
+        return {
+            "total_iterations": len(iteration_metrics),
+            "accuracy_mean": np.mean(accuracies),
+            "accuracy_std": np.std(accuracies),
+            "accuracy_min": np.min(accuracies),
+            "accuracy_max": np.max(accuracies),
+            "accuracy_range": np.max(accuracies) - np.min(accuracies),
+            "train_loss_mean": np.mean(train_losses),
+            "train_loss_std": np.std(train_losses),
+            "eval_loss_mean": np.mean(eval_losses),
+            "eval_loss_std": np.std(eval_losses),
+            "agreement_mean": np.mean(agreements),
+            "agreement_std": np.std(agreements),
+            "diversity_mean": np.mean(diversities),
+            "diversity_std": np.std(diversities),
+            "stability_score": np.mean(agreements) * np.mean(diversities),  # Combined stability metric
+        }

@@ -27,7 +27,7 @@ def main():
     # Technical parameters
     parser.add_argument("--use_4bit", action="store_true", default=True)
     parser.add_argument("--instruction_batch_size", type=int, default=4)
-    parser.add_argument("--eval_batch_size", type=int, default=16)
+    parser.add_argument("--eval_batch_size", type=int, default=8, help="Batch size for evaluation and P(Yes) extraction")
     
     # Research parameters
     parser.add_argument("--track_degradation", action="store_true", default=True)
@@ -41,13 +41,11 @@ def main():
     # Performance optimization parameters
     parser.add_argument("--parallel_category_eval", action="store_true", default=True, help="Evaluate categories in parallel")
     parser.add_argument("--use_fast_rewardbench", action="store_true", default=True, help="Use optimized fast evaluator")
-    parser.add_argument("--eval_batch_size", type=int, default=8, help="Batch size for P(Yes) extraction")
     
     # Legacy external evaluation (deprecated)
     parser.add_argument("--enable_external_eval", action="store_true", default=False, help="Enable legacy external evaluation")
     parser.add_argument("--external_eval_frequency", type=int, default=1, help="Evaluate every N iterations")
     parser.add_argument("--external_eval_samples", type=int, default=100, help="Samples per benchmark dataset")
-    parser.add_argument("--eval_batch_size", type=int, default=8, help="Batch size for evaluation (higher = faster but more memory)")
     
     # Arguments that are ignored but accepted for compatibility
     parser.add_argument("--eval_datasets", nargs="*", help="Cross-dataset evaluation (ignored - use cross_dataset_experiment.py)")

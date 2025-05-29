@@ -233,6 +233,33 @@ class PreferenceGenerator:
         
         print(f"Category distribution: {category_counts}")
         print(f"📊 Batched processing: {instruction_batch_size} instructions × {num_responses} responses = {instruction_batch_size * num_responses} responses per batch")
+        
+        # Log preference generation statistics to wandb
+        if len(preferences) > 0:
+            import wandb
+            
+            # Calculate generation statistics
+            score_diffs = [p['score_diff'] for p in preferences]
+            chosen_scores = [p['chosen_score'] for p in preferences]
+            rejected_scores = [p['rejected_score'] for p in preferences]
+            
+            generation_stats = {
+                f"preference_gen/iteration_{iteration}/total_preferences": len(preferences),
+                f"preference_gen/iteration_{iteration}/avg_score_diff": sum(score_diffs) / len(score_diffs),
+                f"preference_gen/iteration_{iteration}/min_score_diff": min(score_diffs),
+                f"preference_gen/iteration_{iteration}/max_score_diff": max(score_diffs),
+                f"preference_gen/iteration_{iteration}/high_confidence_pairs": sum(1 for d in score_diffs if d > 0.3),
+                f"preference_gen/iteration_{iteration}/avg_chosen_score": sum(chosen_scores) / len(chosen_scores),
+                f"preference_gen/iteration_{iteration}/avg_rejected_score": sum(rejected_scores) / len(rejected_scores),
+            }
+            
+            # Add category distribution
+            for category, count in category_counts.items():
+                generation_stats[f"preference_gen/iteration_{iteration}/category_{category}"] = count
+                generation_stats[f"preference_gen/iteration_{iteration}/category_{category}_pct"] = (count / len(preferences)) * 100
+            
+            wandb.log(generation_stats)
+        
         return Dataset.from_list(preferences)
     
     def _process_instruction_batch(self, model, tokenizer, instruction_batch, num_responses, category_counts):

@@ -96,19 +96,43 @@ class IterativeIPO:
                 model = self._run_sft_training_if_needed(model, tokenizer, iteration + 1)
             
             # Step 3: Generate self-preferences from base dataset
+            # Ensure we don't exceed dataset size
+            available_samples = len(base_dataset)
+            samples_to_use = min(self.config.samples_per_iteration, available_samples)
+            
+            if samples_to_use < self.config.samples_per_iteration:
+                print(f"⚠️ Dataset has only {available_samples} samples, using all available instead of {self.config.samples_per_iteration}")
+            
             train_prefs = self.preference_generator.generate_self_preferences(
                 model, tokenizer, 
-                base_dataset.select(range(self.config.samples_per_iteration)),
+                base_dataset.select(range(samples_to_use)),
                 iteration + 1
             )
             
             # Step 4: Prepare DPO data
             train_dataset, eval_dataset = self.data_manager.prepare_dpo_data(train_prefs, iteration + 1)
             
+            # Log dataset statistics to wandb
+            dataset_stats = self._calculate_dataset_statistics(train_prefs, train_dataset, eval_dataset, iteration + 1)
+            wandb.log({
+                f"dataset_stats/iteration_{iteration + 1}/train_size": len(train_dataset),
+                f"dataset_stats/iteration_{iteration + 1}/eval_size": len(eval_dataset),
+                f"dataset_stats/iteration_{iteration + 1}/preference_pairs": len(train_prefs),
+                **{f"dataset_stats/iteration_{iteration + 1}/{k}": v for k, v in dataset_stats.items()}
+            })
+            
             # Step 5: DPO training on self-generated preferences
-            train_loss, eval_loss = self._train_iteration(
+            train_loss, eval_loss, training_metrics = self._train_iteration(
                 model, tokenizer, train_dataset, eval_dataset, iteration + 1
             )
+            
+            # Log detailed training metrics
+            if training_metrics:
+                wandb.log({
+                    f"training/iteration_{iteration + 1}/final_train_loss": train_loss,
+                    f"training/iteration_{iteration + 1}/final_eval_loss": eval_loss,
+                    **{f"training/iteration_{iteration + 1}/{k}": v for k, v in training_metrics.items()}
+                })
             
             # Step 6: Self-evaluation (category-specific accuracy from preferences)
             category_scores = self.self_evaluator.evaluate_categories(train_prefs)
@@ -147,16 +171,46 @@ class IterativeIPO:
             )
             self.iteration_metrics.append(metrics)
             
-            # Log to wandb
+            # Log to wandb with comprehensive metrics
             wandb_log = {
+                # Core iteration metrics
                 "iteration": iteration + 1,
                 "train_loss": train_loss,
                 "eval_loss": eval_loss,
                 "self_eval_accuracy": self_eval_accuracy,
                 "preference_agreement": preference_agreement,
                 "response_diversity": response_diversity,
+                
+                # Performance metrics
+                "performance/train_loss": train_loss,
+                "performance/eval_loss": eval_loss,
+                "performance/loss_difference": abs(train_loss - eval_loss),
+                "performance/self_eval_accuracy": self_eval_accuracy,
+                
+                # Preference quality metrics
+                "preferences/agreement": preference_agreement,
+                "preferences/diversity": response_diversity,
+                "preferences/stability_score": preference_agreement * response_diversity,  # Combined metric
+                
+                # Category performance breakdown
                 **{f"category/{k}": v for k, v in category_scores.items()},
+                **{f"category_performance/{k}": v for k, v in category_scores.items()},
+                
+                # Iteration progress metrics
+                "progress/iteration_pct": (iteration + 1) / self.config.max_iterations * 100,
+                "progress/iterations_completed": iteration + 1,
+                "progress/iterations_remaining": self.config.max_iterations - (iteration + 1),
             }
+            
+            # Add performance trends (if we have previous iterations)
+            if len(self.iteration_metrics) > 0:
+                prev_accuracy = self.iteration_metrics[-1].self_eval_accuracy if len(self.iteration_metrics) > 0 else 0
+                accuracy_change = self_eval_accuracy - prev_accuracy
+                wandb_log.update({
+                    "trends/accuracy_change": accuracy_change,
+                    "trends/accuracy_trend": "improving" if accuracy_change > 0.01 else "declining" if accuracy_change < -0.01 else "stable",
+                    "trends/peak_accuracy_so_far": max([m.self_eval_accuracy for m in self.iteration_metrics] + [self_eval_accuracy]),
+                })
             
             # Add RewardBench IPO scores if available
             if rewardbench_scores:
@@ -166,7 +220,24 @@ class IterativeIPO:
                     "rewardbench/math": rewardbench_scores.get('rewardbench_math', 0.0),
                     "rewardbench/safety": rewardbench_scores.get('rewardbench_safety', 0.0),
                     "rewardbench/overall": rewardbench_scores.get('rewardbench_overall', 0.0),
+                    
+                    # RewardBench performance metrics
+                    "rewardbench_performance/overall": rewardbench_scores.get('rewardbench_overall', 0.0),
+                    "rewardbench_performance/avg_category": sum([
+                        rewardbench_scores.get('rewardbench_chat', 0.0),
+                        rewardbench_scores.get('rewardbench_code', 0.0),
+                        rewardbench_scores.get('rewardbench_math', 0.0),
+                        rewardbench_scores.get('rewardbench_safety', 0.0)
+                    ]) / 4,
                 })
+            
+            # Add experiment metadata
+            wandb_log.update({
+                "experiment/model_id": self.config.model_id,
+                "experiment/base_dataset": self.config.base_dataset,
+                "experiment/samples_per_iteration": self.config.samples_per_iteration,
+                "experiment/timestamp": datetime.now().isoformat(),
+            })
             
             wandb.log(wandb_log)
             
@@ -198,6 +269,10 @@ class IterativeIPO:
         
         # Generate final visualizations
         self.results_reporter.generate_plots(self.iteration_metrics)
+        
+        # Log comprehensive experiment summary
+        self._log_experiment_summary()
+        
         wandb.finish()
     
     def _run_sft_training_if_needed(self, model, tokenizer, iteration: int):
@@ -210,10 +285,71 @@ class IterativeIPO:
         print(f"🔧 Running SFT training on Dolly-15k (Iteration {iteration})...")
         return self.sft_trainer.train(model, tokenizer, iteration)
     
+    def _calculate_dataset_statistics(self, train_prefs, train_dataset, eval_dataset, iteration: int):
+        """Calculate comprehensive dataset statistics for logging"""
+        import numpy as np
+        from collections import Counter
+        
+        stats = {}
+        
+        # Preference generation statistics
+        if len(train_prefs) > 0:
+            # Category distribution
+            categories = [ex['category'] for ex in train_prefs if 'category' in ex]
+            category_dist = Counter(categories)
+            for cat, count in category_dist.items():
+                stats[f"category_distribution/{cat}"] = count
+                stats[f"category_percentage/{cat}"] = count / len(categories) * 100 if categories else 0
+            
+            # Score statistics
+            chosen_scores = [ex['chosen_score'] for ex in train_prefs if 'chosen_score' in ex]
+            rejected_scores = [ex['rejected_score'] for ex in train_prefs if 'rejected_score' in ex]
+            score_diffs = [ex['score_diff'] for ex in train_prefs if 'score_diff' in ex]
+            
+            if chosen_scores:
+                stats['score_stats/chosen_mean'] = np.mean(chosen_scores)
+                stats['score_stats/chosen_std'] = np.std(chosen_scores)
+                stats['score_stats/chosen_min'] = np.min(chosen_scores)
+                stats['score_stats/chosen_max'] = np.max(chosen_scores)
+            
+            if rejected_scores:
+                stats['score_stats/rejected_mean'] = np.mean(rejected_scores)
+                stats['score_stats/rejected_std'] = np.std(rejected_scores)
+                stats['score_stats/rejected_min'] = np.min(rejected_scores)
+                stats['score_stats/rejected_max'] = np.max(rejected_scores)
+            
+            if score_diffs:
+                stats['score_stats/diff_mean'] = np.mean(score_diffs)
+                stats['score_stats/diff_std'] = np.std(score_diffs)
+                stats['score_stats/diff_min'] = np.min(score_diffs)
+                stats['score_stats/diff_max'] = np.max(score_diffs)
+                stats['score_stats/high_confidence_pairs'] = sum(1 for d in score_diffs if d > 0.3)
+            
+            # Text length statistics
+            chosen_lengths = [len(ex['chosen'].split()) for ex in train_prefs if 'chosen' in ex]
+            rejected_lengths = [len(ex['rejected'].split()) for ex in train_prefs if 'rejected' in ex]
+            
+            if chosen_lengths:
+                stats['text_stats/chosen_length_mean'] = np.mean(chosen_lengths)
+                stats['text_stats/chosen_length_std'] = np.std(chosen_lengths)
+            
+            if rejected_lengths:
+                stats['text_stats/rejected_length_mean'] = np.mean(rejected_lengths)
+                stats['text_stats/rejected_length_std'] = np.std(rejected_lengths)
+        
+        # Dataset quality metrics
+        stats['quality/preference_pairs_generated'] = len(train_prefs)
+        stats['quality/train_eval_split_ratio'] = len(train_dataset) / len(eval_dataset) if len(eval_dataset) > 0 else 0
+        
+        return stats
+    
     def _train_iteration(self, model, tokenizer, train_dataset, eval_dataset, iteration: int):
-        """Train one iteration with paper-aligned configuration"""
-        print(f"🚀 Training DPO iteration {iteration}...")
-        return self.dpo_trainer.train(model, tokenizer, train_dataset, eval_dataset, iteration)
+        """Train one iteration and return detailed metrics"""
+        # Enhanced training with detailed metrics collection
+        train_loss, eval_loss, training_metrics = self.dpo_trainer.train_with_metrics(
+            model, tokenizer, train_dataset, eval_dataset, iteration
+        )
+        return train_loss, eval_loss, training_metrics
     
     def _should_stop_early(self) -> bool:
         """Enhanced early stopping with detailed degradation tracking for research"""
@@ -263,3 +399,31 @@ class IterativeIPO:
             if os.path.exists(old_path) and iteration-1 != self.best_iteration:
                 print(f"🧹 Cleaning up iteration {iteration-1} checkpoint")
                 self.model_manager.cleanup_checkpoint(old_path)
+    
+    def _log_experiment_summary(self):
+        """Log comprehensive experiment summary to wandb"""
+        # Calculate final metrics
+        final_metrics = self.metrics_calculator.calculate_final_metrics(self.iteration_metrics)
+        
+        # Log final metrics to wandb
+        wandb.log({
+            "final_metrics/best_performance": self.best_performance,
+            "final_metrics/best_iteration": self.best_iteration,
+            **{f"final_metrics/{k}": v for k, v in final_metrics.items()}
+        })
+        
+        # Log trends and final statistics
+        trends = self.metrics_calculator.calculate_trends(self.iteration_metrics)
+        wandb.log({
+            "trends/best_performance_trend": trends.get('best_performance_trend', 'stable'),
+            "trends/best_iteration_trend": trends.get('best_iteration_trend', 'stable'),
+            **{f"trends/{k}": v for k, v in trends.items()}
+        })
+        
+        # Log final statistics
+        stats = self.metrics_calculator.calculate_final_statistics(self.iteration_metrics)
+        wandb.log({
+            "final_statistics/best_performance": self.best_performance,
+            "final_statistics/best_iteration": self.best_iteration,
+            **{f"final_statistics/{k}": v for k, v in stats.items()}
+        })
