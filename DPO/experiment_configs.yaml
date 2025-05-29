@@ -1,0 +1,128 @@
+# Experiment configurations for iterative IPO research
+#
+# NOTE: This file documents the full experimental design.
+# Currently implemented experiments (in run_experiments.sh):
+#   - Experiment 1: Iteration limits
+#   - Experiment 2: Cross-dataset transfer  
+#   - Experiment 3: Sample efficiency
+# 
+# Experiments 4-6 are planned for future work.
+
+# Base configuration
+base_config:
+  model_id: "meta-llama/Llama-3.2-1B-Instruct"
+  wandb_entity: null  # Set your wandb username/team
+  early_stopping_patience: 3
+  performance_threshold: 0.01
+
+# Experiment 1: Iteration limit testing
+iteration_limits:
+  description: "Test how many rounds of self-improvement before plateau/degradation"
+  experiments:
+    - name: "small_model_long_run"
+      model_id: "meta-llama/Llama-3.2-1B-Instruct"
+      max_iterations: 20
+      samples_per_iteration: 1000
+      base_dataset: "databricks/databricks-dolly-15k"
+      eval_datasets: ["truthful_qa", "gsm8k", "hellaswag"]
+      
+    - name: "small_model_intensive"
+      model_id: "meta-llama/Llama-3.2-1B-Instruct"
+      max_iterations: 10
+      samples_per_iteration: 5000
+      base_dataset: "databricks/databricks-dolly-15k"
+      eval_datasets: ["truthful_qa", "gsm8k"]
+
+# Experiment 2: Cross-dataset transfer
+cross_dataset_transfer:
+  description: "Test if training on one dataset impacts others"
+  base_model: "meta-llama/Llama-3.2-1B-Instruct"
+  max_iterations: 5
+  samples_per_iteration: 1000
+  training_datasets:
+    - "dolly"      # General instruction following
+    - "alpaca"     # General instruction following
+    - "code_alpaca" # Code generation
+    - "gsm8k"      # Math reasoning
+    - "truthful_qa" # Truthfulness
+  
+  evaluation_matrix:
+    # Each training dataset is evaluated on all datasets
+    full_matrix: true
+
+# Experiment 3: Sample efficiency
+sample_efficiency:
+  description: "Test impact of samples per iteration"
+  model_id: "meta-llama/Llama-3.2-1B-Instruct"
+  base_dataset: "databricks/databricks-dolly-15k"
+  eval_datasets: ["truthful_qa"]
+  max_iterations: 8
+  sample_sizes: [100, 250, 500, 1000, 2000, 5000]
+
+# Experiment 4: Response diversity analysis
+diversity_analysis:
+  description: "Track how response diversity changes"
+  model_id: "meta-llama/Llama-3.2-1B-Instruct"
+  base_dataset: "databricks/databricks-dolly-15k"
+  max_iterations: 10
+  samples_per_iteration: 500
+  metrics_to_track:
+    - "response_diversity"
+    - "preference_agreement"
+    - "semantic_similarity"
+    - "length_variance"
+
+# Experiment 5: Catastrophic forgetting
+forgetting_analysis:
+  description: "Detailed analysis of catastrophic forgetting patterns"
+  model_id: "meta-llama/Llama-3.2-1B-Instruct"
+  sequence_of_datasets:
+    - dataset: "dolly"
+      iterations: 3
+    - dataset: "gsm8k"
+      iterations: 3
+    - dataset: "code_alpaca"
+      iterations: 3
+  eval_after_each_phase: true
+  eval_datasets: ["dolly", "gsm8k", "code_alpaca", "truthful_qa"]
+
+# Experiment 6: Different prompting strategies
+prompting_strategies:
+  description: "Test different self-evaluation prompts"
+  model_id: "meta-llama/Llama-3.2-1B-Instruct"
+  base_dataset: "databricks/databricks-dolly-15k"
+  max_iterations: 5
+  prompt_variants:
+    - name: "binary"
+      prompt: "Is this response helpful? Yes/No"
+    - name: "detailed"
+      prompt: "Evaluate if this response is accurate, helpful, and appropriate. Answer Yes/No"
+    - name: "comparative"
+      prompt: "Is this a high-quality response? Yes/No"
+    - name: "task_specific"
+      prompts:
+        code: "Is this code correct and functional? Yes/No"
+        math: "Is this mathematical solution correct? Yes/No"
+        general: "Is this response helpful? Yes/No"
+
+# Analysis configurations
+analysis_config:
+  metrics:
+    - "self_eval_accuracy"
+    - "cross_dataset_scores"
+    - "preference_agreement"
+    - "response_diversity"
+    - "training_loss"
+    - "evaluation_loss"
+  
+  visualization:
+    - "performance_trajectory"
+    - "transfer_heatmap"
+    - "degradation_curves"
+    - "diversity_scatter"
+    - "forgetting_timeline"
+  
+  statistical_tests:
+    - "degradation_significance"
+    - "transfer_correlation"
+    - "plateau_detection"

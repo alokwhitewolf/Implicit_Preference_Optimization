@@ -58,6 +58,58 @@ Create a conda environment
 conda create -f environment.yaml
 ```
 
+### ⚠️ Important: Flash Attention Installation
+
+Flash Attention is **critical** for optimal performance (2-3x speedup). The setup handles this automatically, but you can also install manually if needed.
+
+#### Automatic Installation (Recommended)
+The `setup_ec2.sh` script automatically installs Flash Attention with proper CUDA version matching:
+
+```bash
+./setup_ec2.sh  # Includes Flash Attention installation
+```
+
+#### Manual Installation (Troubleshooting)
+If automatic installation fails or you need to fix Flash Attention later:
+
+```bash
+./scripts/install_flash_attention.sh
+```
+
+#### Manual Steps (Advanced Users)
+1. **First, check your system CUDA version:**
+```bash
+nvidia-smi  # Check CUDA Version line
+nvcc --version  # Check CUDA compiler version
+```
+
+2. **Install PyTorch with matching CUDA version:**
+```bash
+# For CUDA 12.4 (most common on newer systems):
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
+# For CUDA 11.8 (older systems):
+pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu118
+```
+
+3. **Install Flash Attention (will use pre-compiled wheels):**
+```bash
+pip install flash-attn --no-build-isolation
+```
+
+**⚠️ Critical:** Mismatched CUDA versions force Flash Attention to compile from source (20-40 minutes). Matching versions use pre-compiled wheels (1-2 minutes).
+
+### Verification
+Test your setup:
+```bash
+python -c "
+import torch
+from transformers.utils import is_flash_attn_2_available
+print('Flash Attention available:', is_flash_attn_2_available())
+print('PyTorch CUDA version:', torch.version.cuda)
+"
+```
+
 To evalute the preference modeling ability of any LLM on Reward Bench
 ```
 python Preference_Comparison/Reward_Bench/ours.py --hf_key YOUR_HF_KEY --hf_user YOUR_HF_USERNAME --model_name YOUR_MODEL_NAME
